@@ -1,0 +1,106 @@
+# Configuración Principal del Sistema de Backorder PCM
+# ======================================================
+
+# Configuración del Servidor
+server:
+  host: "0.0.0.0"  # Permite acceso desde red interna
+  port: 5000
+  debug: false
+  secret_key: "CHANGE_THIS_IN_PRODUCTION"
+
+# Configuración de Base de Datos
+database:
+  type: "postgresql"  # o "mysql", "sqlite"
+  host: "localhost"
+  port: 5432
+  name: "backorder_pcm"
+  user: "pcm_user"
+  password: "CHANGE_THIS_PASSWORD"
+  
+# Configuración de ERPs
+erp_systems:
+  # INFOR Syteline
+  syteline:
+    enabled: true
+    type: "odbc"  # o "api"
+    connection:
+      driver: "{ODBC Driver 17 for SQL Server}"
+      server: "syteline-server"
+      database: "SyteLine"
+      username: "erp_user"
+      password: "CHANGE_PASSWORD"
+      trusted_connection: false
+    sync_interval: 300  # segundos (5 minutos)
+    tables:
+      - "orders"
+      - "items"
+      - "inventory"
+      - "production"
+    
+  # MONGUS
+  mongus:
+    enabled: false
+    type: "api"
+    base_url: "http://mongus-server/api"
+    api_key: "YOUR_API_KEY"
+    sync_interval: 300
+    
+  # Intranet Interna
+  intranet:
+    enabled: false
+    type: "api"
+    base_url: "http://intranet-server/api"
+    auth_type: "basic"  # o "bearer", "none"
+    username: "api_user"
+    password: "CHANGE_PASSWORD"
+    sync_interval: 600
+
+# Configuración de Backorder
+backorder:
+  auto_priority: true
+  priority_rules:
+    - field: "due_date"
+      weight: 0.4
+    - field: "customer_priority"
+      weight: 0.3
+    - field: "material_availability"
+      weight: 0.3
+  
+  alert_thresholds:
+    material_shortage: 2  # días antes de alertar
+    production_delay: 1   # días de retraso
+    delivery_risk: 3      # días antes de fecha prometida
+
+# Configuración de Notificaciones
+notifications:
+  email:
+    enabled: false
+    smtp_server: "smtp.empresa.com"
+    smtp_port: 587
+    use_tls: true
+    sender: "backorder@empresa.com"
+    
+  # Notificaciones en sistema
+  in_app:
+    enabled: true
+
+# Configuración de Logs
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  file: "logs/backorder.log"
+  max_size: 10485760  # 10MB
+  backup_count: 5
+
+# Configuración de Seguridad
+security:
+  jwt_expiration: 86400  # 24 horas
+  password_min_length: 8
+  require_https: false  # cambiar a true en producción
+
+# Configuración de Cache
+cache:
+  type: "redis"
+  host: "localhost"
+  port: 6379
+  db: 0
+  ttl: 300  # segundos
