@@ -57,13 +57,14 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: backorder_celery
-    command: celery -A app.celery worker --loglevel=info
+    command: python celeryworker.py worker --loglevel=info
     environment:
       - DATABASE_URL=postgresql://pcm_user:pcm_password_2026@db:5432/backorder_pcm
       - REDIS_URL=redis://redis:6379/0
     volumes:
       - ./backend:/app
       - ./config.yaml:/app/config.yaml
+      - ./logs:/app/logs
     depends_on:
       - db
       - redis
