@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
 from app.models import User, SystemSetting, AuditLog
+from app.middleware import require_allowed_ip
 
 bp = Blueprint('settings', __name__)
 
@@ -27,6 +28,7 @@ def get_network_settings():
 
 @bp.route('/network', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
 def update_network_settings():
     user = User.query.get(int(get_jwt_identity()))
     if not user or user.role != 'admin':

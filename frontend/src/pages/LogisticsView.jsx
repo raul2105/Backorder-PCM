@@ -19,7 +19,8 @@ import {
   DialogContent,
   DialogActions,
   TextField,
-  Alert
+  Alert,
+  Divider
 } from '@mui/material';
 import { logisticsService } from '../services/api';
 import { format } from 'date-fns';
@@ -32,6 +33,9 @@ export default function LogisticsView() {
   const [trackingInfo, setTrackingInfo] = useState({ carrier: '', trackingNumber: '' });
   const [actionError, setActionError] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [ocrFile, setOcrFile] = useState(null);
+  const [ocrResult, setOcrResult] = useState(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
 
   const { data: pending, isLoading: loadingPending } = useQuery(
     ['pending-shipments', searchTerm],
@@ -62,13 +66,39 @@ export default function LogisticsView() {
       setSelectedOrder(order);
       setTrackingInfo({ carrier: '', trackingNumber: '' });
       setActionError('');
+      setOcrFile(null);
+      setOcrResult(null);
       setOpenShipDialog(true);
   };
 
   const handleCloseDialog = () => {
       setOpenShipDialog(false);
       setSelectedOrder(null);
+      setOcrFile(null);
+      setOcrResult(null);
   };
+
+    const handleRunOcr = async () => {
+      setActionError('');
+      setOcrResult(null);
+      if (!selectedOrder) {
+        setActionError('Selecciona una orden');
+        return;
+      }
+      if (!ocrFile) {
+        setActionError('Selecciona o captura una imagen de la etiqueta');
+        return;
+      }
+      setOcrLoading(true);
+      try {
+        const res = await logisticsService.ocrValidateShipment(selectedOrder.id, ocrFile);
+        setOcrResult(res);
+      } catch (e) {
+        setActionError(e.response?.data?.error || 'Error ejecutando OCR');
+      } finally {
+        setOcrLoading(false);
+      }
+    };
 
   const handleConfirmShip = () => {
       if (selectedOrder) {
@@ -230,6 +260,29 @@ export default function LogisticsView() {
                   <Typography variant="caption" color="textSecondary">
                       * Esta acción marcará la orden como enviada y saldrá de la lista de pendientes.
                   </Typography>
+
+                    <Divider />
+
+                    <Typography variant="subtitle2">
+                      Validación de etiqueta (OCR)
+                    </Typography>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      capture="environment"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        setOcrFile(file);
+                        setOcrResult(null);
+                      }}
+                    />
+                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                      <Button variant="outlined" onClick={handleRunOcr} disabled={ocrLoading || !ocrFile}>
+                        {ocrLoading ? 'Leyendo...' : 'Validar con OCR'}
+                      </Button>
+                      {ocrResult?.ok && <Chip label="OK" color="success" size="small" />}
+                      {ocrResult && !ocrResult.ok && <Chip label="No coincide" color="warning" size="small" />}
+                    </Box>
               </Box>
           </DialogContent>
           <DialogActions>

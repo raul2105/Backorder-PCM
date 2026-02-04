@@ -6,6 +6,7 @@ from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
 from app.models import Order, OrderItem, Customer, AuditLog, SystemSetting
+from app.middleware import require_allowed_ip, require_roles, get_current_user
 from datetime import datetime
 from sqlalchemy import or_, and_
 import ipaddress
@@ -13,38 +14,10 @@ import ipaddress
 bp = Blueprint('backorder', __name__)
 
 
-def _ip_allowed(ip: str) -> bool:
-    """Valida si la IP del cliente está permitida para operaciones de escritura.
-    Si no hay configuración, permite por defecto.
-    """
-    setting = SystemSetting.query.filter_by(key='network.allowed_ips').first()
-    if not setting or not setting.value:
-        return True
-    allowed = setting.value
-    try:
-        for rule in allowed:
-            rule = rule.strip()
-            if not rule:
-                continue
-            # Coincidencia directa
-            if rule == ip:
-                return True
-            # CIDR
-            try:
-                if ipaddress.ip_address(ip) in ipaddress.ip_network(rule, strict=False):
-                    return True
-            except ValueError:
-                continue
-    except Exception:
-        # Ante cualquier problema con la configuración, permitir para no bloquear
-        return True
-    return False
-
-
 @bp.route('', methods=['GET'])
 @jwt_required()
 def get_backorders():
-    """Obtener lista de backorders"""
+    """Obtener lista de backorders con paginación"""
     # Parámetros de filtrado
     status = request.args.get('status')
     customer_id = request.args.get('customer_id')
@@ -52,6 +25,38 @@ def get_backorders():
     date_from = request.args.get('date_from')
     date_to = request.args.get('date_to')
     search = request.args.get('search')
+    order_number = request.args.get('order_number')
+    customer_name = request.args.get('customer_name')
+    
+    # Parámetros de paginación
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 25, type=int)
+    sort = request.args.get('sort', 'priority')  # Campo por defecto
+    order = request.args.get('order', 'asc')  # asc o desc
+    
+    # Validaciones
+    if page < 1:
+        page = 1
+    if page_size < 1 or page_size > 100:
+        page_size = 25
+    
+    # Campos permitidos para ordenar
+    allowed_sort_fields = {
+        'priority': Order.priority,
+        'promised_date': Order.promised_date,
+        'order_date': Order.order_date,
+        'order_number': Order.order_number,
+        'customer_name': Order.customer_name,
+        'status': Order.status
+    }
+    
+    # Validar sort field
+    if sort not in allowed_sort_fields:
+        sort = 'priority'
+    
+    # Validar order direction
+    if order not in ['asc', 'desc']:
+        order = 'asc'
     
     query = Order.query.filter_by(is_backorder=True)
     
@@ -62,6 +67,10 @@ def get_backorders():
             Order.order_number.ilike(search_term),
             Order.customer_name.ilike(search_term)
         ))
+    if order_number:
+        query = query.filter(Order.order_number.ilike(f"%{order_number}%"))
+    if customer_name:
+        query = query.filter(Order.customer_name.ilike(f"%{customer_name}%"))
     if status:
         query = query.filter(Order.status == status)
     if customer_id:
@@ -73,17 +82,41 @@ def get_backorders():
     if date_to:
         query = query.filter(Order.order_date <= datetime.fromisoformat(date_to))
     
-    # Ordenar por prioridad y fecha prometida
-    orders = query.order_by(Order.priority.asc(), Order.promised_date.asc()).all()
+    # Aplicar ordenamiento
+    sort_field = allowed_sort_fields[sort]
+    if order == 'desc':
+        query = query.order_by(sort_field.desc())
+    else:
+        query = query.order_by(sort_field.asc())
+    
+    # Ordenamiento secundario por prioridad y fecha prometida (si no es el campo principal)
+    if sort != 'priority':
+        query = query.order_by(Order.priority.asc())
+    if sort not in ['priority', 'promised_date']:
+        query = query.order_by(Order.promised_date.asc())
+    
+    # Contar total antes de paginar
+    total = query.count()
+    
+    # Calcular total de páginas
+    total_pages = (total + page_size - 1) // page_size if page_size > 0 else 0
+    
+    # Aplicar paginación
+    offset = (page - 1) * page_size
+    orders = query.offset(offset).limit(page_size).all()
     
     return jsonify({
-        'total': len(orders),
-        'backorders': [order.to_dict() for order in orders]
+        'items': [order.to_dict() for order in orders],
+        'total': total,
+        'page': page,
+        'page_size': page_size,
+        'total_pages': total_pages
     }), 200
 
 
 @bp.route('', methods=['POST'])
 @jwt_required()
+@require_allowed_ip
 def create_backorder():
     """Crear nueva orden manualmente"""
     data = request.get_json()
@@ -189,6 +222,7 @@ def get_backorder_detail(order_id):
 
 @bp.route('/<int:order_id>/department-status', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
 def update_department_status(order_id):
     """Actualizar estado departamental de una orden"""
     order = Order.query.get_or_404(order_id)
@@ -205,22 +239,44 @@ def update_department_status(order_id):
     if department not in valid_departments:
          return jsonify({'error': 'Departamento inválido'}), 400
 
+    role_map = {
+        'planning_status': 'planning',
+        'warehouse_status': 'warehouse',
+        'purchasing_status': 'purchasing',
+        'production_status': 'production',
+        'logistics_status': 'logistics'
+    }
+    user = get_current_user()
+    if not user or (user.role != 'admin' and user.role != role_map.get(department)):
+        return jsonify({'error': 'No autorizado'}), 403
+
+    # Obtener user_id de forma robusta desde JWT (es un string con el user.id)
+    try:
+        user_id = int(get_jwt_identity())
+    except (ValueError, TypeError):
+        return jsonify({'error': 'Token de usuario inválido'}), 401
+
+    # Guardar valor anterior para auditoría
+    old_status = getattr(order, department, None)
+
     # Actualizar estado dinámicamente
     setattr(order, department, status)
+    order.updated_at = datetime.utcnow()
     
     # Lógica de sincronización de estados (opcional)
     # Si producción se completa, marcar items como producidos? (Depende de reglas de negocio)
     
-    db.session.commit()
-    
-    # Audit Log
-    user_id = get_jwt_identity().get('id')
+    # Crear Audit Log
     log = AuditLog(
         user_id=user_id,
         action='update_dept_status',
         entity='order',
         entity_id=str(order.id),
-        details={'department': department, 'new_status': status}
+        details={
+            'department': department, 
+            'old_status': old_status,
+            'new_status': status
+        }
     )
     db.session.add(log)
     db.session.commit()
@@ -230,6 +286,8 @@ def update_department_status(order_id):
 
 @bp.route('/<int:order_id>/priority', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
+@require_roles('planning')
 def update_priority(order_id):
     """Actualizar prioridad de un backorder"""
     order = Order.query.get_or_404(order_id)
@@ -239,10 +297,6 @@ def update_priority(order_id):
     
     if not new_priority or new_priority not in [1, 2, 3, 4]:
         return jsonify({'error': 'Prioridad inválida (1-4)'}), 400
-    # Validar IP
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    if not _ip_allowed(client_ip):
-        return jsonify({'error': 'Operación no permitida desde esta IP'}), 403
     
     old_priority = order.priority
     order.priority = new_priority
@@ -267,6 +321,8 @@ def update_priority(order_id):
 
 @bp.route('/<int:order_id>/status', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
+@require_roles('planning')
 def update_status(order_id):
     """Actualizar estado de un backorder"""
     order = Order.query.get_or_404(order_id)
@@ -279,11 +335,6 @@ def update_status(order_id):
     if not new_status or new_status not in valid_statuses:
         return jsonify({'error': f'Estado inválido. Debe ser: {", ".join(valid_statuses)}'}), 400
     
-    # Validar IP
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    if not _ip_allowed(client_ip):
-        return jsonify({'error': 'Operación no permitida desde esta IP'}), 403
-
     old_status = order.status
     order.status = new_status
     order.updated_at = datetime.utcnow()
@@ -311,6 +362,8 @@ def update_status(order_id):
 
 @bp.route('/<int:order_id>/items/<int:item_id>', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
+@require_roles('planning')
 def update_order_item(order_id, item_id):
     """Actualizar cantidad producida/enviada de un item"""
     from app.models import OrderItem
@@ -319,9 +372,6 @@ def update_order_item(order_id, item_id):
         return jsonify({'error': 'Item no pertenece a esta orden'}), 400
     
     data = request.get_json() or {}
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    if not _ip_allowed(client_ip):
-        return jsonify({'error': 'Operación no permitida desde esta IP'}), 403
     
     changes = {}
     if 'quantity_produced' in data:
@@ -357,6 +407,8 @@ def update_order_item(order_id, item_id):
 
 @bp.route('/batch/update-status', methods=['PUT'])
 @jwt_required()
+@require_allowed_ip
+@require_roles('planning')
 def batch_update_status():
     """Actualizar estado a múltiples órdenes"""
     data = request.get_json() or {}
@@ -365,10 +417,6 @@ def batch_update_status():
     
     if not order_ids or not new_status:
         return jsonify({'error': 'order_ids y status requeridos'}), 400
-    
-    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr).split(',')[0].strip()
-    if not _ip_allowed(client_ip):
-        return jsonify({'error': 'Operación no permitida desde esta IP'}), 403
     
     updated = 0
     for oid in order_ids:

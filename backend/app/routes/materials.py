@@ -10,7 +10,7 @@ from app.models import Material
 bp = Blueprint('materials', __name__)
 
 
-@bp.route('/', methods=['GET'])
+@bp.route('/', methods=['GET'], strict_slashes=False)
 @jwt_required()
 def get_materials():
     """Obtener lista de materiales"""
@@ -45,7 +45,7 @@ def get_materials():
     }), 200
 
 
-@bp.route('/alerts', methods=['GET'])
+@bp.route('/alerts', methods=['GET'], strict_slashes=False)
 @jwt_required()
 def get_material_alerts():
     """Obtener alertas de materiales con stock bajo"""

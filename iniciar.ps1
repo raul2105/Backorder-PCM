@@ -6,7 +6,8 @@
 
 param(
     [switch]$SkipBrowser,
-    [switch]$Reset
+    [switch]$Reset,
+    [switch]$Dev
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,6 +40,92 @@ function Write-Success {
     param($Message)
     Write-Host "[OK] " -ForegroundColor Green -NoNewline
     Write-Host $Message -ForegroundColor Green
+}
+
+$devPidFile = Join-Path $PSScriptRoot "frontend\.devserver.pid"
+$script:DevPort = 3000
+
+function Get-AvailablePort {
+    param(
+        [int]$StartPort = 3000,
+        [int]$EndPort = 3010
+    )
+    for ($p = $StartPort; $p -le $EndPort; $p++) {
+        $portInUse = Get-NetTCPConnection -LocalPort $p -State Listen -ErrorAction SilentlyContinue
+        if (-not $portInUse) {
+            return $p
+        }
+    }
+    return $null
+}
+
+function Start-FrontendDevServer {
+    if (-not $Dev) {
+        return
+    }
+
+    if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+        Write-Error-Step "npm no esta disponible. Instala Node.js para usar el frontend en modo desarrollo."
+        return
+    }
+
+    $selectedPort = Get-AvailablePort -StartPort 3000 -EndPort 3010
+    if (-not $selectedPort) {
+        Write-Error-Step "No hay puertos disponibles entre 3000-3010."
+        return
+    }
+    if ($selectedPort -ne 3000) {
+        Write-Warning-Step "El puerto 3000 ya esta en uso. Usando el puerto $selectedPort."
+    }
+    $script:DevPort = $selectedPort
+
+    if (Test-Path $devPidFile) {
+        try {
+            $existingPid = Get-Content $devPidFile -ErrorAction SilentlyContinue
+            if ($existingPid) {
+                $existingProc = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
+                if ($existingProc) {
+                    Write-Warning-Step "Frontend dev server ya en ejecucion (PID $existingPid)"
+                    return
+                }
+            }
+        } catch {
+        }
+        Remove-Item $devPidFile -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Step "Iniciando frontend en modo desarrollo (Vite)..."
+    $frontendPath = Join-Path $PSScriptRoot "frontend"
+    if (-not (Test-Path (Join-Path $frontendPath "node_modules"))) {
+        Write-Step "Instalando dependencias de frontend..."
+        & npm install --prefix $frontendPath | Out-Null
+    }
+    $proc = Start-Process -FilePath "powershell.exe" -WorkingDirectory $frontendPath -ArgumentList "-NoExit","-Command","npm run dev -- --host 0.0.0.0 --port $script:DevPort" -PassThru
+    Set-Content -Path $devPidFile -Value $proc.Id
+    Write-Success "Frontend dev server iniciado (PID $($proc.Id))"
+}
+
+function Wait-BackendReady {
+    $containerId = docker-compose ps -q backend
+    if (-not $containerId) {
+        Write-Error-Step "No se encontró el contenedor backend."
+        return $false
+    }
+
+    for ($i = 1; $i -le 20; $i++) {
+        $status = docker inspect -f "{{.State.Status}}" $containerId 2>$null
+        if ($status -eq "running") {
+            return $true
+        }
+        if ($status -eq "restarting") {
+            Write-Warning-Step "Backend reiniciando..."
+        }
+        Start-Sleep -Seconds 3
+    }
+
+    Write-Error-Step "Backend no está listo. Últimos logs:"
+    docker logs --tail 120 $containerId
+    return $false
 }
 
 # Verificar que Docker esté instalado
@@ -116,7 +203,17 @@ Write-Host "============================================================" -Foreg
 Write-Step "Iniciando contenedores Docker..."
 Write-Host ""
 
-docker-compose up -d
+if ($Dev) {
+    Write-Step "Deteniendo frontend en Docker (modo dev usa Vite)..."
+    $oldErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    docker-compose stop frontend 2>$null | Out-Null
+    docker-compose rm -f frontend 2>$null | Out-Null
+    $ErrorActionPreference = $oldErrorAction
+    docker-compose up -d db redis backend celery_worker celery_beat
+} else {
+    docker-compose up -d
+}
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error-Step "Error al iniciar los servicios"
@@ -141,9 +238,18 @@ Write-Host "   - Backend API..." -NoNewline
 Start-Sleep -Seconds 8
 Write-Host " OK" -ForegroundColor Green
 
-Write-Host "   - Frontend Web..." -NoNewline
-Start-Sleep -Seconds 5
-Write-Host " OK" -ForegroundColor Green
+if (-not (Wait-BackendReady)) {
+    Read-Host "Presiona Enter para salir"
+    exit 1
+}
+
+if ($Dev) {
+    Start-FrontendDevServer
+} else {
+    Write-Host "   - Frontend Web..." -NoNewline
+    Start-Sleep -Seconds 5
+    Write-Host " OK" -ForegroundColor Green
+}
 
 # Verificar si la base de datos ya está inicializada
 Write-Host ""
@@ -232,7 +338,11 @@ $localIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -l
 
 Write-Host "Acceso Local:" -ForegroundColor Yellow
 Write-Host "  Frontend:  " -NoNewline
-Write-Host "http://localhost:3000" -ForegroundColor Green
+if ($Dev) {
+    Write-Host "http://localhost:$script:DevPort (dev)" -ForegroundColor Green
+} else {
+    Write-Host "http://localhost:3001 (prod)" -ForegroundColor Green
+}
 Write-Host "  Backend:   " -NoNewline
 Write-Host "http://localhost:5000" -ForegroundColor Green
 
@@ -240,7 +350,11 @@ if ($localIP) {
     Write-Host ""
     Write-Host "Acceso desde Red Interna:" -ForegroundColor Yellow
     Write-Host "  Frontend:  " -NoNewline
-    Write-Host "http://${localIP}:3000" -ForegroundColor Green
+    if ($Dev) {
+        Write-Host "http://${localIP}:$script:DevPort (dev)" -ForegroundColor Green
+    } else {
+        Write-Host "http://${localIP}:3001 (prod)" -ForegroundColor Green
+    }
     Write-Host "  Backend:   " -NoNewline
     Write-Host "http://${localIP}:5000" -ForegroundColor Green
 }
@@ -279,7 +393,11 @@ Write-Host ""
 if (-not $SkipBrowser) {
     Write-Step "Abriendo navegador en 3 segundos..."
     Start-Sleep -Seconds 3
-    Start-Process "http://localhost:3000"
+    if ($Dev) {
+        Start-Process "http://localhost:$script:DevPort"
+    } else {
+        Start-Process "http://localhost:3001"
+    }
 }
 
 Write-Host ""

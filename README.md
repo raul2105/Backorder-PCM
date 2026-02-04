@@ -12,6 +12,10 @@ El sistema se iniciará automáticamente y abrirá tu navegador.
 - Usuario: `admin`
 - Contraseña: `admin123`
 
+**Modos de inicio:**
+- `dev` (desarrollo): frontend con Vite en `http://localhost:3000` (auto-reload)
+- `prod` (produccion): frontend con nginx en `http://localhost:3001`
+
 ## 📁 Scripts Disponibles
 
 - **INICIAR.bat** - Inicia todo el sistema automáticamente

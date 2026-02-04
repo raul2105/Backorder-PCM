@@ -31,6 +31,11 @@ erp_systems:
       password: "CHANGE_PASSWORD"
       trusted_connection: false
     sync_interval: 300  # segundos (5 minutos)
+    timeout: 30  # timeout en segundos para queries
+    circuit_breaker:
+      failure_threshold: 5  # Número de fallas antes de abrir
+      window_seconds: 300  # Ventana de tiempo para contar fallas (5 min)
+      timeout_seconds: 300  # Tiempo que permanece abierto (5 min)
     tables:
       - "orders"
       - "items"
@@ -44,6 +49,11 @@ erp_systems:
     base_url: "http://mongus-server/api"
     api_key: "YOUR_API_KEY"
     sync_interval: 300
+    timeout: 30  # timeout en segundos para requests HTTP
+    circuit_breaker:
+      failure_threshold: 5
+      window_seconds: 300
+      timeout_seconds: 300
     
   # Intranet Interna
   intranet:
@@ -54,6 +64,11 @@ erp_systems:
     username: "api_user"
     password: "CHANGE_PASSWORD"
     sync_interval: 600
+    timeout: 30  # timeout en segundos para requests HTTP
+    circuit_breaker:
+      failure_threshold: 5
+      window_seconds: 300
+      timeout_seconds: 300
 
 # Configuración de Backorder
 backorder:
@@ -97,6 +112,36 @@ security:
   password_min_length: 8
   require_https: false  # cambiar a true en producción
 
+# Configuración de Red y Control de Acceso por IP
+network:
+  # Trust Proxy: Habilitar cuando la app esté detrás de un reverse proxy (nginx, HAProxy, etc.)
+  # Si es true, confía en el header X-Forwarded-For para obtener la IP real del cliente
+  # Si es false, usa request.remote_addr directamente
+  trust_proxy: false  # Cambiar a true si está detrás de reverse proxy
+  
+  # Allowlist de IPs: Lista de IPs o rangos CIDR permitidos para operaciones de escritura
+  # Si la lista está vacía o no existe, TODOS los accesos están permitidos
+  # Si tiene valores, SOLO las IPs listadas pueden hacer POST/PUT/PATCH/DELETE
+  # Nota: Se gestiona en la DB (tabla SystemSetting, key='network.allowed_ips')
+  # Ejemplos de configuración válida:
+  #   - IP individual: ["192.168.1.100", "10.0.0.5"]
+  #   - Rango CIDR: ["192.168.1.0/24", "10.0.0.0/8"]
+  #   - Red completa: ["172.16.0.0/12"]
+  #   - Permitir todo: [] (lista vacía)
+  # 
+  # IMPORTANTE: El endpoint /api/auth/login NO está afectado por esta allowlist
+  # IMPORTANTE: Los endpoints de lectura (GET) NO están afectados por esta allowlist
+
+# Configuración de Upload de Archivos
+upload:
+  max_file_size_mb: 50  # Tamaño máximo de archivo en MB (10-50 recomendado)
+  allowed_extensions:
+    - csv
+  allowed_mime_types:
+    - text/csv
+    - application/csv
+    - text/plain
+
 # Configuración de Cache
 cache:
   type: "redis"
@@ -104,3 +149,15 @@ cache:
   port: 6379
   db: 0
   ttl: 300  # segundos
+
+# OCR (Validación/Identificación en planta)
+ocr:
+  enabled: true
+  # En Windows local: instala Tesseract y pon aquí la ruta.
+  # Ejemplo: "C:/Program Files/Tesseract-OCR/tesseract.exe"
+  tesseract_cmd: ""
+  # Idiomas instalados en el contenedor/host
+  languages: "spa+eng"
+  # Parámetros OCR
+  oem: 3
+  psm: 6

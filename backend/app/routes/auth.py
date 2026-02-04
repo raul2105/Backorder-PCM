@@ -7,6 +7,7 @@ from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identi
 from werkzeug.security import generate_password_hash, check_password_hash
 from app import db
 from app.models import User
+from app.middleware import require_allowed_ip, ROLE_OPTIONS
 from datetime import datetime
 
 bp = Blueprint('auth', __name__)
@@ -45,13 +46,15 @@ def login():
             'id': user.id,
             'username': user.username,
             'email': user.email,
-            'role': user.role
+            'role': user.role,
+            'must_change_password': user.must_change_password
         }
     }), 200
 
 
 @bp.route('/register', methods=['POST'])
 @jwt_required()
+@require_allowed_ip
 def register():
     """Registrar nuevo usuario (solo admin)"""
     current_user_id = int(get_jwt_identity())
@@ -65,7 +68,7 @@ def register():
     username = data.get('username')
     email = data.get('email')
     password = data.get('password')
-    role = data.get('role', 'user')
+    role = data.get('role', 'planning')
     
     if not username or not email or not password:
         return jsonify({'error': 'Datos incompletos'}), 400
@@ -77,6 +80,9 @@ def register():
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'Email ya registrado'}), 400
     
+    if role not in ROLE_OPTIONS:
+        return jsonify({'error': 'Rol invÃ¡lido'}), 400
+
     # Crear usuario
     new_user = User(
         username=username,
@@ -114,5 +120,36 @@ def get_current_user():
         'username': user.username,
         'email': user.email,
         'role': user.role,
+        'must_change_password': user.must_change_password,
         'last_login': user.last_login.isoformat() if user.last_login else None
+    }), 200
+
+
+@bp.route('/change-password', methods=['POST'])
+@jwt_required()
+def change_password():
+    """Cambiar contraseña del usuario actual"""
+    current_user_id = int(get_jwt_identity())
+    user = User.query.get(current_user_id)
+
+    if not user:
+        return jsonify({'error': 'Usuario no encontrado'}), 404
+
+    data = request.get_json() or {}
+    current_password = data.get('current_password')
+    new_password = data.get('new_password')
+
+    if not current_password or not new_password:
+        return jsonify({'error': 'Contraseña actual y nueva son requeridas'}), 400
+
+    if not check_password_hash(user.password_hash, current_password):
+        return jsonify({'error': 'Contraseña actual incorrecta'}), 401
+
+    user.password_hash = generate_password_hash(new_password)
+    user.must_change_password = False
+    db.session.commit()
+
+    return jsonify({
+        'message': 'Contraseña actualizada correctamente',
+        'must_change_password': False
     }), 200

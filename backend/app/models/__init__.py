@@ -191,10 +191,11 @@ class User(db.Model):
     password_hash = db.Column(db.String(255))
     
     # Roles
-    role = db.Column(db.String(50), default='user')  # admin, manager, user, operator
+    role = db.Column(db.String(50), default='planning')  # admin, planning, warehouse, purchasing, production, logistics
     
     # Estado
     is_active = db.Column(db.Boolean, default=True)
+    must_change_password = db.Column(db.Boolean, default=False)
     
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)

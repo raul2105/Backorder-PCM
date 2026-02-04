@@ -3,7 +3,7 @@ Aplicación Backend para Sistema de Backorder PCM
 Gestión de backorders para planta de fabricación de etiquetas
 """
 
-from flask import Flask
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
@@ -35,11 +35,26 @@ def create_app(config_name='default'):
     
     # Cargar configuración
     config = load_config()
+    app.config['APP_CONFIG_YAML'] = config
+    app.config['OCR_CONFIG'] = config.get('ocr', {}) or {}
     
     # Configuración de Flask
-    app.config['SECRET_KEY'] = config['server']['secret_key']
-    app.config['JWT_SECRET_KEY'] = config['server']['secret_key']
+    secret_key = (config.get('server', {}).get('secret_key') or '').strip()
+    is_debug = bool(config.get('server', {}).get('debug', False))
+    env_name = os.getenv('FLASK_ENV', 'production').lower()
+    is_production = env_name == 'production' and not is_debug
+    if is_production and (not secret_key or secret_key == 'CHANGE_THIS_IN_PRODUCTION'):
+        raise RuntimeError(
+            'Configuración insegura: SECRET_KEY inválida. '
+            'Configura server.secret_key en config.yaml antes de iniciar en producción.'
+        )
+    app.config['SECRET_KEY'] = secret_key
+    app.config['JWT_SECRET_KEY'] = secret_key
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(seconds=config['security']['jwt_expiration'])
+    
+    # Límite de tamaño de archivo (50MB por defecto, configurable)
+    max_upload_mb = config.get('upload', {}).get('max_file_size_mb', 50)
+    app.config['MAX_CONTENT_LENGTH'] = max_upload_mb * 1024 * 1024  # Convertir MB a bytes
     
     # Configuración de Base de Datos
     db_config = config['database']
@@ -63,6 +78,41 @@ def create_app(config_name='default'):
     migrate.init_app(app, db)
     jwt.init_app(app)
     CORS(app)
+
+    # Bloquear operaciones de admin si debe cambiar contraseña
+    @app.before_request
+    def enforce_admin_password_change():
+        from flask_jwt_extended import verify_jwt_in_request, get_jwt_identity
+        from app.models import User
+
+        # Ignorar solicitudes OPTIONS (preflight CORS)
+        if request.method == 'OPTIONS':
+            return None
+
+        allowed_paths = {
+            '/api/auth/login',
+            '/api/auth/change-password',
+            '/api/auth/me',
+            '/health'
+        }
+        if request.path in allowed_paths:
+            return None
+
+        try:
+            verify_jwt_in_request(optional=True)
+        except Exception:
+            return None
+
+        identity = get_jwt_identity()
+        if not identity:
+            return None
+
+        user = User.query.get(int(identity))
+        if user and user.role == 'admin' and user.must_change_password:
+            return jsonify({
+                'error': 'Debe cambiar la contraseña antes de continuar',
+                'must_change_password': True
+            }), 403
     
     # Configurar Celery
     celery.conf.update(app.config)
@@ -81,9 +131,19 @@ def create_app(config_name='default'):
     app.register_blueprint(settings.bp, url_prefix='/api/settings')
     app.register_blueprint(importer.bp, url_prefix='/api/import')
     app.register_blueprint(test_mode.bp, url_prefix='/api/test')
+    
+    # Ruta de salud
     @app.route('/health')
     def health_check():
         return {'status': 'healthy', 'message': 'Backorder PCM API Running'}
+    
+    # Error handler para archivos demasiado grandes
+    @app.errorhandler(413)
+    def request_entity_too_large(error):
+        max_size_mb = app.config.get('MAX_CONTENT_LENGTH', 50 * 1024 * 1024) / (1024 * 1024)
+        return jsonify({
+            'error': f'Archivo demasiado grande. Tamaño máximo permitido: {int(max_size_mb)}MB'
+        }), 413
     
     return app
 
