@@ -3,13 +3,21 @@ Servicio de Sincronización con ERPs
 Maneja la sincronización automática de datos desde los diferentes ERPs
 """
 
-from app import db, celery
+from app import db
 from app.models import Order, OrderItem, Customer, Material
 from app.erp_connectors import ERPConnectorFactory
 from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
+
+# Importar celery desde celery_app en lugar de app
+# Esto asegura que se use la configuración correcta
+try:
+    from celery_app import celery
+except ImportError:
+    # Fallback para cuando no está disponible (ej. durante imports)
+    celery = None
 
 
 class SyncService:
@@ -205,14 +213,17 @@ class SyncService:
 
 
 # Tareas Celery para sincronización automática
-@celery.task
-def sync_all_erps():
+@celery.task(bind=True, name='app.services.sync_service.sync_all_erps')
+def sync_all_erps(self):
     """Tarea para sincronizar todos los ERPs activos"""
+    logger.info("Iniciando sincronización de todos los ERPs")
+    
     active_connectors = ERPConnectorFactory.get_all_active_connectors()
     
     results = []
     for connector_info in active_connectors:
         erp_name = connector_info['name']
+        logger.info(f"Sincronizando {erp_name}...")
         
         # Sincronizar órdenes
         order_result = SyncService.sync_orders_from_erp(erp_name)
@@ -226,4 +237,5 @@ def sync_all_erps():
             'materials': material_result
         })
     
+    logger.info(f"Sincronización completada. Resultados: {results}")
     return results

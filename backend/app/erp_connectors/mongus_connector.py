@@ -1,12 +1,15 @@
 """
 Conector para MONGUS ERP
-Implementa conexión vía API REST
+Implementa conexión vía API REST con retry y circuit breaker
 """
 
 import requests
+from requests.exceptions import RequestException, Timeout, ConnectionError
 from datetime import datetime
 import logging
+import time
 from .base_connector import BaseERPConnector
+from .resilience import with_retry, StructuredLogger
 
 logger = logging.getLogger(__name__)
 
@@ -45,32 +48,75 @@ class MongusConnector(BaseERPConnector):
         """Verificar conexión con API"""
         try:
             self.connect()
-            response = self.session.get(f"{self.base_url}/health")
+            response = self.session.get(
+                f"{self.base_url}/health",
+                timeout=self.default_timeout
+            )
             self.disconnect()
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Test de conexión falló: {str(e)}")
             return False
     
+    @with_retry(
+        max_attempts=3,
+        backoff_base=2.0,
+        exceptions=(Timeout, ConnectionError, RequestException)
+    )
     def _make_request(self, endpoint, method='GET', params=None, data=None):
-        """Helper para hacer requests a la API"""
+        """
+        Helper para hacer requests a la API con retry y logging estructurado.
+        """
         if not self.session:
             self.connect()
         
         url = f"{self.base_url}{endpoint}"
+        start_time = time.time()
         
         try:
             if method == 'GET':
-                response = self.session.get(url, params=params)
+                response = self.session.get(
+                    url, 
+                    params=params, 
+                    timeout=self.default_timeout
+                )
             elif method == 'POST':
-                response = self.session.post(url, json=data)
+                response = self.session.post(
+                    url, 
+                    json=data, 
+                    timeout=self.default_timeout
+                )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint=endpoint,
+                method=method,
+                status=response.status_code,
+                duration_ms=duration_ms
+            )
             
             response.raise_for_status()
             return response.json()
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error en request a MONGUS: {str(e)}")
-            return None
+        except RequestException as e:
+            duration_ms = (time.time() - start_time) * 1000
+            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+            
+            # Log estructurado de error
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint=endpoint,
+                method=method,
+                status=status or 0,
+                duration_ms=duration_ms,
+                error=str(e)
+            )
+            
+            logger.error(f"Error en request a MONGUS {endpoint}: {str(e)}")
+            raise  # Re-raise para que retry pueda manejarlo
     
     def fetch_orders(self, start_date=None, end_date=None):
         """Obtener órdenes desde MONGUS API"""

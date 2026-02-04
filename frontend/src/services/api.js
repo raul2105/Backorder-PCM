@@ -4,7 +4,7 @@
 
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
+const API_BASE_URL = `${window.location.origin}/api`;
 
 // Configurar interceptores de Axios
 const api = axios.create({
@@ -14,18 +14,63 @@ const api = axios.create({
   }
 });
 
+let inMemoryToken = null;
+
+const getCookieToken = () => {
+  const match = document.cookie.match(/(?:^|; )bo_token=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
+};
+
+const setCookieToken = (token) => {
+  if (token) {
+    document.cookie = `bo_token=${encodeURIComponent(token)}; path=/; SameSite=Lax`;
+  } else {
+    document.cookie = 'bo_token=; Max-Age=0; path=/; SameSite=Lax';
+  }
+};
+
+const setToken = (token) => {
+  inMemoryToken = token || null;
+  if (token) {
+    localStorage.setItem('token', token);
+    sessionStorage.setItem('token', token);
+    setCookieToken(token);
+    api.defaults.headers.Authorization = `Bearer ${token}`;
+    if (api.defaults.headers.common) {
+      api.defaults.headers.common.Authorization = `Bearer ${token}`;
+    }
+  } else {
+    localStorage.removeItem('token');
+    sessionStorage.removeItem('token');
+    setCookieToken(null);
+    delete api.defaults.headers.Authorization;
+    if (api.defaults.headers.common) {
+      delete api.defaults.headers.common.Authorization;
+    }
+  }
+};
+
+const getStoredToken = () =>
+  inMemoryToken || localStorage.getItem('token') || sessionStorage.getItem('token') || getCookieToken();
+
+const bootToken = localStorage.getItem('token') || sessionStorage.getItem('token');
+if (bootToken) {
+  setToken(bootToken);
+}
+
 // Interceptor para agregar token a las peticiones
 api.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('token');
+    const token = getStoredToken();
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    
-    // Agregar header de modo pruebas si está activo
-    const testMode = localStorage.getItem('testMode') === 'true';
-    if (testMode) {
-      config.headers['X-Test-Mode'] = 'true';
+      if (!config.headers) {
+        config.headers = {};
+      }
+      if (typeof config.headers.set === 'function') {
+        config.headers.set('Authorization', `Bearer ${token}`);
+      } else {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
     
     return config;
@@ -37,11 +82,33 @@ api.interceptors.request.use(
 
 // Interceptor para manejar errores de respuesta
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (response?.config?.url?.includes('/auth/login') && response.data?.access_token) {
+      setToken(response.data.access_token);
+      if (response.data.user) {
+        localStorage.setItem('user', JSON.stringify(response.data.user));
+      }
+    }
+    return response;
+  },
   (error) => {
+    if (error.response?.status === 403 && error.response?.data?.must_change_password) {
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const updatedUser = { ...user, must_change_password: true };
+      localStorage.setItem('user', JSON.stringify(updatedUser));
+      window.dispatchEvent(new Event('storage'));
+      window.location.href = '/change-password';
+    }
     if (error.response?.status === 401) {
-      localStorage.removeItem('token');
-      window.location.href = '/login';
+      const headerAuth = error.config?.headers?.Authorization || error.config?.headers?.authorization;
+      const hasAuthHeader = Boolean(headerAuth);
+      const hasStoredToken = Boolean(getStoredToken());
+      if (hasAuthHeader || hasStoredToken) {
+        setToken(null);
+        if (window.location.pathname !== '/login') {
+          window.location.href = '/login';
+        }
+      }
     }
     return Promise.reject(error);
   }
@@ -52,7 +119,7 @@ export const authService = {
   login: async (username, password) => {
     const response = await api.post('/auth/login', { username, password });
     if (response.data.access_token) {
-      localStorage.setItem('token', response.data.access_token);
+      setToken(response.data.access_token);
       if (response.data.user) {
         localStorage.setItem('user', JSON.stringify(response.data.user));
       }
@@ -60,8 +127,19 @@ export const authService = {
     return response.data;
   },
 
+  changePassword: async (currentPassword, newPassword) => {
+    const response = await api.post('/auth/change-password', {
+      current_password: currentPassword,
+      new_password: newPassword
+    });
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    const updatedUser = { ...user, must_change_password: false };
+    localStorage.setItem('user', JSON.stringify(updatedUser));
+    return response.data;
+  },
+
   logout: () => {
-    localStorage.removeItem('token');
+    setToken(null);
   },
 
   getCurrentUser: async () => {
@@ -141,8 +219,22 @@ export const productionService = {
     return response.data;
   },
 
+  getInProgressOrders: async (filters = {}) => {
+    const response = await api.get('/production/in-progress-orders', { params: filters });
+    return response.data;
+  },
+
   createLog: async (logData) => {
     const response = await api.post('/production/log', logData);
+    return response.data;
+  },
+
+  ocrValidate: async (orderId, imageFile) => {
+    const form = new FormData();
+    form.append('image', imageFile);
+    const response = await api.post(`/production/order/${orderId}/ocr-validate`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
     return response.data;
   }
 };
@@ -161,6 +253,15 @@ export const logisticsService = {
 
   updateShipment: async (orderId, trackingNumber, carrier) => {
     const response = await api.put(`/logistics/shipment/${orderId}`, { tracking_number: trackingNumber, carrier });
+    return response.data;
+  },
+
+  ocrValidateShipment: async (orderId, imageFile) => {
+    const form = new FormData();
+    form.append('image', imageFile);
+    const response = await api.post(`/logistics/shipment/${orderId}/ocr-validate`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
     return response.data;
   }
 };
@@ -195,6 +296,10 @@ export const adminService = {
   listAudit: async () => {
     const res = await api.get('/admin/audit');
     return res.data;
+  },
+  purgeOrders: async (payload) => {
+    const res = await api.post('/admin/purge/orders', payload);
+    return res.data;
   }
 };
 
@@ -206,26 +311,6 @@ export const settingsService = {
   },
   updateNetwork: async (allowed_ips) => {
     const res = await api.put('/settings/network', { allowed_ips });
-    return res.data;
-  }
-};
-
-// Modo de Pruebas
-export const testModeService = {
-  getStatus: async () => {
-    const res = await api.get('/test/status');
-    return res.data;
-  },
-  init: async () => {
-    const res = await api.post('/test/init');
-    return res.data;
-  },
-  reset: async () => {
-    const res = await api.post('/test/reset');
-    return res.data;
-  },
-  clear: async () => {
-    const res = await api.post('/test/clear');
     return res.data;
   }
 };

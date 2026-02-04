@@ -33,25 +33,25 @@ export default function Dashboard() {
 
   const stats = [
     {
-      title: 'Backorders Totales',
+      title: 'Ordenes en Backorder',
       value: overview?.backorders?.total || 0,
       icon: <AssignmentIcon sx={{ fontSize: 40 }} />,
       color: '#1976d2',
     },
     {
-      title: 'Backorders Urgentes',
+      title: 'Ordenes Urgentes (7 dias)',
       value: overview?.backorders?.urgent || 0,
       icon: <WarningIcon sx={{ fontSize: 40 }} />,
       color: '#d32f2f',
     },
     {
-      title: 'En Producción',
+      title: 'Ordenes en Produccion',
       value: overview?.production?.in_progress || 0,
       icon: <PrecisionIcon sx={{ fontSize: 40 }} />,
       color: '#f57c00',
     },
     {
-      title: 'Completados (Semana)',
+      title: 'Ordenes Completadas (Semana)',
       value: overview?.completed?.this_week || 0,
       icon: <CheckCircleIcon sx={{ fontSize: 40 }} />,
       color: '#388e3c',

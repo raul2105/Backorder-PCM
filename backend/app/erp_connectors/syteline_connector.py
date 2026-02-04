@@ -1,12 +1,14 @@
 """
 Conector para INFOR Syteline
-Implementa conexión vía ODBC/SQL Server
+Implementa conexión vía ODBC/SQL Server con retry y circuit breaker
 """
 
 import pyodbc
 from datetime import datetime, timedelta
 import logging
+import time
 from .base_connector import BaseERPConnector
+from .resilience import with_retry, StructuredLogger
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +21,13 @@ class SytelineConnector(BaseERPConnector):
         self.connection = None
         self.connection_config = config.get('connection', {})
         
+    @with_retry(
+        max_attempts=3,
+        backoff_base=2.0,
+        exceptions=(pyodbc.OperationalError, pyodbc.DatabaseError)
+    )
     def connect(self):
-        """Establecer conexión con Syteline vía ODBC"""
+        """Establecer conexión con Syteline vía ODBC con retry"""
         try:
             conn_str = (
                 f"DRIVER={self.connection_config['driver']};"
@@ -36,7 +43,15 @@ class SytelineConnector(BaseERPConnector):
                     f"PWD={self.connection_config['password']};"
                 )
             
-            self.connection = pyodbc.connect(conn_str, timeout=30)
+            # Timeout en la conexión (en segundos)
+            self.connection = pyodbc.connect(
+                conn_str, 
+                timeout=self.default_timeout
+            )
+            
+            # Configurar timeout para comandos (queries)
+            self.connection.timeout = self.default_timeout
+            
             logger.info("Conexión exitosa con Syteline")
             return True
             
@@ -53,25 +68,13 @@ class SytelineConnector(BaseERPConnector):
     
     def test_connection(self):
         """Verificar conexión"""
-        try:
-            self.connect()
-            cursor = self.connection.cursor()
-            cursor.execute("SELECT 1")
-            result = cursor.fetchone()
-            self.disconnect()
-            return result is not None
-        except Exception as e:
-            logger.error(f"Test de conexión falló: {str(e)}")
-            return False
-    
-    def fetch_orders(self, start_date=None, end_date=None):
-        """
-        Obtener órdenes de Syteline
-        Adaptar según estructura real de tablas en Syteline
+        try: con logging estructurado.
+        Adaptar según estructura real de tablas en Syteline.
         """
         if not self.connection:
             self.connect()
         
+        start_time = time.time()
         cursor = self.connection.cursor()
         
         # Query adaptable - modificar según esquema real de Syteline
@@ -110,21 +113,34 @@ class SytelineConnector(BaseERPConnector):
             for row in cursor.fetchall():
                 results.append(dict(zip(columns, row)))
             
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint='fetch_orders',
+                method='SQL',
+                status=200,
+                duration_ms=duration_ms,
+                extra={'rows': len(results)}
+            )
+            
             logger.info(f"Se obtuvieron {len(results)} órdenes de Syteline")
             return results
             
         except Exception as e:
-            logger.error(f"Error obteniendo órdenes: {str(e)}")
-            return []
-    
-    def fetch_materials(self):
-        """
-        Obtener inventario de materiales
-        Adaptar según estructura real de Syteline
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado de error
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint='fetch_orders', con logging estructurado.
+        Adaptar según estructura real de Syteline.
         """
         if not self.connection:
             self.connect()
         
+        start_time = time.time()
         cursor = self.connection.cursor()
         
         # Query adaptable
@@ -147,6 +163,80 @@ class SytelineConnector(BaseERPConnector):
         WHERE 
             i.Stat = 'A'  -- Active items
         """
+        
+        try:
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            results = []
+            
+            for row in cursor.fetchall():
+                results.append(dict(zip(columns, row)))
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint='fetch_materials',
+                method='SQL',
+                status=200, con logging estructurado"""
+        if not self.connection:
+            self.connect()
+        
+        start_time = time.time()
+        cursor = self.connection.cursor()
+        
+        query = """
+        SELECT 
+            CustNum AS customer_code,
+            Name AS name,
+            Contact AS contact_person,
+            Email AS email,
+            Phone AS phone
+        FROM 
+            customer_mst
+        WHERE 
+            Stat = 'A'  -- Active customers
+        """
+        
+        try:
+            cursor.execute(query)
+            columns = [column[0] for column in cursor.description]
+            results = []
+            
+            for row in cursor.fetchall():
+                results.append(dict(zip(columns, row)))
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint='fetch_customers',
+                method='SQL',
+                status=200,
+                duration_ms=duration_ms,
+                extra={'rows': len(results)}
+            )
+            
+            logger.info(f"Se obtuvieron {len(results)} clientes de Syteline")
+            return results
+            
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado de error
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint='fetch_customers',
+                method='SQL',
+                status=500,
+                duration_ms=duration_ms,
+                error=str(e)
+            )
+            
+            logger.error(f"Error obteniendo clientes: {str(e)}")
+            raise
         
         try:
             cursor.execute(query)

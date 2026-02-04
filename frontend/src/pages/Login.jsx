@@ -11,7 +11,7 @@ import {
 } from '@mui/material';
 import { authService } from '../services/api';
 
-export default function Login({ setIsAuthenticated }) {
+export default function Login({ setIsAuthenticated, setMustChangePassword }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -24,9 +24,35 @@ export default function Login({ setIsAuthenticated }) {
     setLoading(true);
 
     try {
-      await authService.login(username, password);
+      const result = await authService.login(username, password);
+
+      // Actualizar estado en App
       setIsAuthenticated(true);
-      navigate('/');
+
+      // Verificar si el usuario debe cambiar contrasena
+      let mustChange = result?.user?.must_change_password === true;
+      if (result?.access_token) {
+        localStorage.setItem('token', result.access_token);
+      }
+      if (result?.user) {
+        localStorage.setItem('user', JSON.stringify(result.user));
+      }
+      if (result?.user?.must_change_password == null) {
+        try {
+          const currentUser = await authService.getCurrentUser();
+          mustChange = currentUser?.must_change_password === true;
+        } catch {
+          // Si falla, mantener valor actual
+        }
+      }
+      setMustChangePassword(mustChange);
+
+      // Redirigir segun el resultado
+      if (mustChange) {
+        navigate('/change-password');
+      } else {
+        navigate('/');
+      }
     } catch (err) {
       setError(err.response?.data?.error || 'Error al iniciar sesión');
     } finally {

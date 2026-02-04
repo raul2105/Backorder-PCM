@@ -24,6 +24,8 @@ import {
   TablePagination,
   Typography,
   Grid,
+  IconButton,
+  Menu,
   FormControl,
   InputLabel,
   TableContainer,
@@ -32,68 +34,62 @@ import {
   AccordionDetails
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import FilterListIcon from '@mui/icons-material/FilterList';
+import SwapVertIcon from '@mui/icons-material/SwapVert';
 import { backorderService } from '../services/api';
 import StatusChips from '../components/StatusChips';
 
-const STATUS_LABELS = {
-  pending: 'Pendiente',
-  in_production: 'En Producción',
-  ready: 'Listo',
-  shipped: 'Enviado',
-  delivered: 'Entregado',
-};
-
-const PRIORITY_LABELS = {
-  1: 'Urgente',
-  2: 'Alta',
-  3: 'Normal',
-  4: 'Baja',
-};
-
 export default function BackorderList() {
-  const [filters, setFilters] = useState({ status: '', search: '' });
+  const [filters, setFilters] = useState({ status: '', search: '', order_number: '', customer_name: '', priority: '' });
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [filterAnchorEl, setFilterAnchorEl] = useState(null);
+  const [filterColumn, setFilterColumn] = useState('');
+  const [filterValue, setFilterValue] = useState('');
+  const [sortAnchorEl, setSortAnchorEl] = useState(null);
+  const [sortColumn, setSortColumn] = useState('');
+  const [sortField, setSortField] = useState('priority');
+  const [sortOrder, setSortOrder] = useState('asc');
   const [selected, setSelected] = useState([]);
+  const [batchStatus, setBatchStatus] = useState('');
+  const [isBatchUpdating, setIsBatchUpdating] = useState(false);
+  const [updatingIds, setUpdatingIds] = useState({});
   const [openDetail, setOpenDetail] = useState(false);
   const [currentOrder, setCurrentOrder] = useState(null);
-  const [editingItem, setEditingItem] = useState(null);
-  const [itemData, setItemData] = useState({});
-  const [error, setError] = useState('');
-  const [page, setPage] = useState(0);
-  const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [page, setPage] = useState(1);
+  const [rowsPerPage, setRowsPerPage] = useState(25);
 
   const { data, isLoading, refetch } = useQuery(
-    ['backorders', filters],
-    () => backorderService.getAll(filters),
-    { refetchInterval: 15000 }
+    ['backorders', filters, page, rowsPerPage, dateFrom, dateTo, sortField, sortOrder],
+    () => backorderService.getAll({
+      ...filters,
+      page,
+      page_size: rowsPerPage,
+      date_from: dateFrom || undefined,
+      date_to: dateTo || undefined,
+      sort: sortField,
+      order: sortOrder
+    }),
+    { refetchInterval: 300000, keepPreviousData: true }
   );
 
-  const { data: detailData, isLoading: detailLoading } = useQuery(
-    ['backorder', currentOrder?.id],
-    () => backorderService.getById(currentOrder.id),
-    { enabled: !!currentOrder && openDetail }
-  );
+  const handleFilterChange = (field, value) => {
+    setFilters({ ...filters, [field]: value });
+    setPage(1);
+  };
 
-  const activeOrder = detailData?.order || currentOrder;
-  const items = detailData?.items || [];
-  
-  const [updatingDept, setUpdatingDept] = useState(false);
+  const handleChangePage = (event, newPage) => {
+    setPage(newPage + 1);
+  };
 
-  const handleUpdateDeptStatus = async (dept, status) => {
-      setUpdatingDept(true);
-      try {
-          await backorderService.updateDepartmentStatus(activeOrder.id, dept, status);
-          refetch(); // Refetch list
-          // Refetch details handled by useQuery built-in mechanic or we can invalidate query
-      } catch (e) {
-          setError('Error actualizando estado del departamento');
-      } finally {
-          setUpdatingDept(false);
-      }
+  const handleChangeRowsPerPage = (event) => {
+    setRowsPerPage(parseInt(event.target.value, 10));
+    setPage(1);
   };
 
   const handleSelectAll = (e) => {
     if (e.target.checked) {
-      setSelected(filtered.map(o => o.id));
+      setSelected(orders.map(o => o.id));
     } else {
       setSelected([]);
     }
@@ -105,79 +101,113 @@ export default function BackorderList() {
     );
   };
 
-  const handleOpenDetail = (order) => {
-    setCurrentOrder(order);
-    setOpenDetail(true);
+  const openFilterMenu = (event, column) => {
+    setFilterAnchorEl(event.currentTarget);
+    setFilterColumn(column);
+    setFilterValue(filters[column] || '');
   };
 
-  const handleCloseDetail = () => {
-    setOpenDetail(false);
-    setCurrentOrder(null);
-    setEditingItem(null);
+  const closeFilterMenu = () => {
+    setFilterAnchorEl(null);
+    setFilterColumn('');
+    setFilterValue('');
   };
 
-  const handleStatusChange = async (orderId, newStatus) => {
-    setError('');
+  const applyColumnFilter = () => {
+    if (filterColumn) {
+      setFilters({ ...filters, [filterColumn]: filterValue });
+      setPage(1);
+    }
+    closeFilterMenu();
+  };
+
+  const clearColumnFilter = () => {
+    if (filterColumn) {
+      setFilters({ ...filters, [filterColumn]: '' });
+      setPage(1);
+    }
+    closeFilterMenu();
+  };
+
+  const openSortMenu = (event, column) => {
+    setSortAnchorEl(event.currentTarget);
+    setSortColumn(column);
+  };
+
+  const closeSortMenu = () => {
+    setSortAnchorEl(null);
+    setSortColumn('');
+  };
+
+  const applySort = (field, order) => {
+    setSortField(field);
+    setSortOrder(order);
+    setPage(1);
+    closeSortMenu();
+  };
+
+  const handleDateChange = (field, value) => {
+    if (field == 'from') {
+      setDateFrom(value);
+    } else {
+      setDateTo(value);
+    }
+    setPage(1);
+  };
+
+  const statusOptions = [
+    { value: 'pending', label: 'Pendiente' },
+    { value: 'in_production', label: 'En Produccion' },
+    { value: 'ready', label: 'Listo' },
+    { value: 'shipped', label: 'Enviado' },
+    { value: 'delivered', label: 'Entregado' },
+  ];
+
+  const handleUpdateStatus = async (id, status) => {
+    setUpdatingIds(prev => ({ ...prev, [id]: true }));
     try {
-      await backorderService.updateStatus(orderId, newStatus);
-      refetch();
-    } catch (e) {
-      setError(e.response?.data?.error || 'Error actualizando estado');
+      await backorderService.updateStatus(id, status);
+      await refetch();
+    } catch {
+    } finally {
+      setUpdatingIds(prev => ({ ...prev, [id]: false }));
     }
   };
 
-  const handlePriorityChange = async (orderId, newPriority) => {
-    setError('');
+  const handleUpdatePriority = async (id, priority) => {
+    setUpdatingIds(prev => ({ ...prev, [id]: true }));
     try {
-      await backorderService.updatePriority(orderId, newPriority);
-      refetch();
-    } catch (e) {
-      setError(e.response?.data?.error || 'Error actualizando prioridad');
+      await backorderService.updatePriority(id, priority);
+      await refetch();
+    } catch {
+    } finally {
+      setUpdatingIds(prev => ({ ...prev, [id]: false }));
     }
   };
 
-  const handleEditItem = (item) => {
-    setEditingItem(item);
-    setItemData({
-      quantity_produced: item.quantity_produced || 0,
-      quantity_shipped: item.quantity_shipped || 0,
-    });
-  };
-
-  const handleSaveItem = async () => {
-    if (!currentOrder) return;
+  const handleBatchUpdate = async () => {
+    if (!batchStatus || selected.length == 0) return;
+    setIsBatchUpdating(true);
     try {
-      await backorderService.updateItem(currentOrder.id, editingItem.id, itemData);
-      setEditingItem(null);
-      refetch();
-    } catch (e) {
-      setError(e.response?.data?.error || 'Error actualizando item');
-    }
-  };
-
-  const handleBatchStatusUpdate = async (newStatus) => {
-    if (!newStatus || selected.length === 0) return;
-    setError('');
-    try {
-      await backorderService.batchUpdateStatus(selected, newStatus);
+      await backorderService.batchUpdateStatus(selected, batchStatus);
       setSelected([]);
-      refetch();
-    } catch (e) {
-      setError(e.response?.data?.error || 'Error actualizando estados');
+      setBatchStatus('');
+      await refetch();
+    } catch {
+    } finally {
+      setIsBatchUpdating(false);
     }
   };
 
-  const handleFilterChange = (field, value) => {
-    setFilters({ ...filters, [field]: value });
-    setPage(0);
-  };
+  const orders = data?.items || [];
+  const total = data?.total || 0;
 
-  const filtered = data?.backorders || [];
-  const paginatedOrders = filtered.slice(page * rowsPerPage, (page + 1) * rowsPerPage);
-
-  if (isLoading) {
+  if (isLoading && !data) {
     return (
-      <Box display="flex" justifyContent="center" alignItems="center" minHeight="400px">
+      <Box display="flex" flexDirection="column" justifyContent="center" alignItems="center" minHeight="400px">
+        <Typography variant="body2" color="textSecondary" gutterBottom>
+          Cargando backorders...
+        </Typography>
         <CircularProgress />
       </Box>
     );
@@ -188,8 +218,6 @@ export default function BackorderList() {
       <Typography variant="h4" gutterBottom>
         Planeación de Backorders
       </Typography>
-
-      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       <Paper sx={{ p: 2, mb: 3 }}>
         <Grid container spacing={2}>
@@ -203,7 +231,7 @@ export default function BackorderList() {
               variant="outlined"
             />
           </Grid>
-          <Grid item xs={12} sm={6} md={3}>
+                    <Grid item xs={12} sm={6} md={3}>
             <FormControl fullWidth size="small">
               <InputLabel>Estado</InputLabel>
               <Select
@@ -212,66 +240,198 @@ export default function BackorderList() {
                 label="Estado"
               >
                 <MenuItem value="">Todos</MenuItem>
-                <MenuItem value="pending">Pendiente</MenuItem>
-                <MenuItem value="in_production">En Producción</MenuItem>
-                <MenuItem value="ready">Listo</MenuItem>
-                <MenuItem value="shipped">Enviado</MenuItem>
-                <MenuItem value="delivered">Entregado</MenuItem>
+                {statusOptions.map(option => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
               </Select>
             </FormControl>
           </Grid>
-          {selected.length > 0 && (
-            <Grid item xs={12} sm={6} md={3}>
-              <FormControl fullWidth size="small">
-                <InputLabel>Cambiar estado masivo</InputLabel>
-                <Select
-                  value=""
-                  onChange={(e) => {
-                    if (e.target.value) handleBatchStatusUpdate(e.target.value);
-                  }}
-                  label="Cambiar estado masivo"
-                >
-                  <MenuItem value="">Seleccionar...</MenuItem>
-                  <MenuItem value="pending">Pendiente</MenuItem>
-                  <MenuItem value="in_production">En Producción</MenuItem>
-                  <MenuItem value="ready">Listo</MenuItem>
-                  <MenuItem value="shipped">Enviado</MenuItem>
-                  <MenuItem value="delivered">Entregado</MenuItem>
-                </Select>
-              </FormControl>
-            </Grid>
-          )}
-          {selected.length > 0 && (
-            <Grid item xs={12}>
-              <Chip label={`${selected.length} seleccionados`} color="primary" />
-            </Grid>
-          )}
+          <Grid item xs={12} sm={6} md={3}>
+            <TextField
+              fullWidth
+              size="small"
+              label="Fecha Orden Desde"
+              type="date"
+              value={dateFrom}
+              onChange={(e) => handleDateChange('from', e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            <TextField
+              fullWidth
+              size="small"
+              label="Fecha Orden Hasta"
+              type="date"
+              value={dateTo}
+              onChange={(e) => handleDateChange('to', e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Grid>
         </Grid>
+        {selected.length > 0 && (
+          <Box sx={{ mt: 2, display: 'flex', alignItems: 'center', gap: 2, flexWrap: 'wrap' }}>
+            <Typography variant="body2">
+              Acciones en lote: {selected.length} seleccionadas
+            </Typography>
+            <FormControl size="small" sx={{ minWidth: 200 }}>
+              <InputLabel>Nuevo estado</InputLabel>
+              <Select
+                value={batchStatus}
+                onChange={(e) => setBatchStatus(e.target.value)}
+                label="Nuevo estado"
+              >
+                <MenuItem value="">Seleccionar</MenuItem>
+                {statusOptions.map(option => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Button
+              variant="contained"
+              disabled={!batchStatus || isBatchUpdating}
+              onClick={handleBatchUpdate}
+            >
+              Aplicar
+            </Button>
+          </Box>
+        )}
       </Paper>
+
+      <Menu
+        anchorEl={filterAnchorEl}
+        open={Boolean(filterAnchorEl)}
+        onClose={closeFilterMenu}
+      >
+        <Box sx={{ p: 2, minWidth: 220 }}>
+          {filterColumn === 'status' && (
+            <FormControl fullWidth size="small">
+              <InputLabel>Estado</InputLabel>
+              <Select
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                label="Estado"
+              >
+                <MenuItem value="">Todos</MenuItem>
+                {statusOptions.map(option => (
+                  <MenuItem key={option.value} value={option.value}>
+                    {option.label}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          {filterColumn === 'priority' && (
+            <FormControl fullWidth size="small">
+              <InputLabel>Prioridad</InputLabel>
+              <Select
+                value={filterValue}
+                onChange={(e) => setFilterValue(e.target.value)}
+                label="Prioridad"
+              >
+                <MenuItem value="">Todas</MenuItem>
+                {[1, 2, 3, 4].map(p => (
+                  <MenuItem key={p} value={String(p)}>Prioridad {p}</MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+          )}
+          {filterColumn !== 'status' && filterColumn !== 'priority' && (
+            <TextField
+              fullWidth
+              size="small"
+              label="Filtro"
+              value={filterValue}
+              onChange={(e) => setFilterValue(e.target.value)}
+            />
+          )}
+          <Box sx={{ mt: 2, display: 'flex', gap: 1, justifyContent: 'flex-end' }}>
+            <Button size="small" onClick={clearColumnFilter}>Limpiar</Button>
+            <Button size="small" variant="contained" onClick={applyColumnFilter}>Aplicar</Button>
+          </Box>
+        </Box>
+      </Menu>
+
+      <Menu
+        anchorEl={sortAnchorEl}
+        open={Boolean(sortAnchorEl)}
+        onClose={closeSortMenu}
+      >
+        <Box sx={{ p: 1, minWidth: 200 }}>
+          <Typography variant="caption" color="textSecondary" sx={{ display: 'block', mb: 1 }}>
+            Ordenar por
+          </Typography>
+          {sortColumn && (
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+              <Button size="small" onClick={() => applySort(sortColumn, 'asc')}>Ascendente</Button>
+              <Button size="small" onClick={() => applySort(sortColumn, 'desc')}>Descendente</Button>
+            </Box>
+          )}
+        </Box>
+      </Menu>
 
       <TableContainer component={Paper}>
         <Table>
           <TableHead>
-            <TableRow sx={{ backgroundColor: '#f5f5f5' }}>
+            <TableRow>
               <TableCell padding="checkbox">
                 <Checkbox
-                  checked={selected.length === paginatedOrders.length && paginatedOrders.length > 0}
-                  indeterminate={selected.length > 0 && selected.length < paginatedOrders.length}
+                  checked={orders.length > 0 && selected.length === orders.length}
+                  indeterminate={selected.length > 0 && selected.length < orders.length}
                   onChange={handleSelectAll}
                 />
               </TableCell>
-              <TableCell><strong>Orden / OT</strong></TableCell>
-              <TableCell><strong>Cliente</strong></TableCell>
-              <TableCell><strong>F. Orden</strong></TableCell>
-              <TableCell><strong>F. Prometida</strong></TableCell>
-              <TableCell><strong>Estado</strong></TableCell>
-              <TableCell><strong>Flujo</strong></TableCell>
-              <TableCell><strong>Prioridad</strong></TableCell>
+              <TableCell><strong>Orden</strong>
+                <IconButton size="small" onClick={(e) => openFilterMenu(e, 'order_number')}>
+                  <FilterListIcon fontSize="inherit" />
+                </IconButton>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'order_number')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
+              <TableCell><strong>Cliente</strong>
+                <IconButton size="small" onClick={(e) => openFilterMenu(e, 'customer_name')}>
+                  <FilterListIcon fontSize="inherit" />
+                </IconButton>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'customer_name')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
+              <TableCell><strong>Fecha Orden</strong>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'order_date')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
+              <TableCell><strong>Fecha Promesa</strong>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'promised_date')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
+              <TableCell><strong>Estado</strong>
+                <IconButton size="small" onClick={(e) => openFilterMenu(e, 'status')}>
+                  <FilterListIcon fontSize="inherit" />
+                </IconButton>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'status')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
+              <TableCell><strong>Prioridad</strong>
+                <IconButton size="small" onClick={(e) => openFilterMenu(e, 'priority')}>
+                  <FilterListIcon fontSize="inherit" />
+                </IconButton>
+                <IconButton size="small" onClick={(e) => openSortMenu(e, 'priority')}>
+                  <SwapVertIcon fontSize="inherit" />
+                </IconButton>
+              </TableCell>
               <TableCell><strong>Acciones</strong></TableCell>
             </TableRow>
           </TableHead>
-          <TableBody>
-            {paginatedOrders.map(order => (
+                    <TableBody>
+            {orders.map(order => (
               <TableRow key={order.id} hover>
                 <TableCell padding="checkbox">
                   <Checkbox
@@ -279,14 +439,7 @@ export default function BackorderList() {
                     onChange={() => handleSelect(order.id)}
                   />
                 </TableCell>
-                <TableCell>
-                    {order.order_number}
-                    {order.work_order && (
-                        <Typography variant="caption" display="block" color="textSecondary">
-                            OT: {order.work_order}
-                        </Typography>
-                    )}
-                </TableCell>
+                <TableCell>{order.order_number}</TableCell>
                 <TableCell>{order.customer_name}</TableCell>
                 <TableCell>
                   {order.order_date ? format(new Date(order.order_date), 'dd/MM/yyyy') : '-'}
@@ -295,262 +448,59 @@ export default function BackorderList() {
                   {order.promised_date ? format(new Date(order.promised_date), 'dd/MM/yyyy') : '-'}
                 </TableCell>
                 <TableCell>
-                  <Select
-                    value={order.status}
-                    onChange={e => handleStatusChange(order.id, e.target.value)}
-                    size="small"
-                  >
-                    <MenuItem value="pending">Pendiente</MenuItem>
-                    <MenuItem value="in_production">En Producción</MenuItem>
-                    <MenuItem value="ready">Listo</MenuItem>
-                    <MenuItem value="shipped">Enviado</MenuItem>
-                    <MenuItem value="delivered">Entregado</MenuItem>
-                  </Select>
+                  <Chip label={order.status} size="small" />
                 </TableCell>
+                <TableCell>{order.priority || 3}</TableCell>
                 <TableCell>
-                  <StatusChips order={order} compact />
-                </TableCell>
-                <TableCell>
-                  <Select
-                    value={order.priority || 3}
-                    onChange={e => handlePriorityChange(order.id, e.target.value)}
-                    size="small"
-                  >
-                    <MenuItem value={1}>Urgente</MenuItem>
-                    <MenuItem value={2}>Alta</MenuItem>
-                    <MenuItem value={3}>Normal</MenuItem>
-                    <MenuItem value={4}>Baja</MenuItem>
-                  </Select>
-                </TableCell>
-                <TableCell>
-                  <Button size="small" variant="outlined" onClick={() => handleOpenDetail(order)}>
-                    Detalles / Planear
-                  </Button>
+                  <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                    <FormControl size="small" sx={{ minWidth: 150 }}>
+                      <Select
+                        value={order.status || ''}
+                        onChange={(e) => handleUpdateStatus(order.id, e.target.value)}
+                        disabled={!!updatingIds[order.id]}
+                      >
+                        {statusOptions.map(option => (
+                          <MenuItem key={option.value} value={option.value}>
+                            {option.label}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                    <FormControl size="small" sx={{ minWidth: 110 }}>
+                      <Select
+                        value={order.priority || 3}
+                        onChange={(e) => handleUpdatePriority(order.id, Number(e.target.value))}
+                        disabled={!!updatingIds[order.id]}
+                      >
+                        {[1, 2, 3, 4].map(p => (
+                          <MenuItem key={p} value={p}>Prioridad {p}</MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Box>
                 </TableCell>
               </TableRow>
             ))}
+            {orders.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={8} align="center">
+                  No hay backorders
+                </TableCell>
+              </TableRow>
+            )}
           </TableBody>
         </Table>
         <TablePagination
-          rowsPerPageOptions={[5, 10, 25, 50]}
+          rowsPerPageOptions={[10, 25, 50, 100]}
           component="div"
-          count={filtered.length}
+          count={total}
           rowsPerPage={rowsPerPage}
-          page={page}
-          onPageChange={(e, newPage) => setPage(newPage)}
-          onRowsPerPageChange={e => setRowsPerPage(parseInt(e.target.value, 10))}
+          page={page - 1}
+          onPageChange={handleChangePage}
+          onRowsPerPageChange={handleChangeRowsPerPage}
+          labelRowsPerPage="Filas por página:"
         />
       </TableContainer>
-
-      <Dialog open={openDetail} onClose={handleCloseDetail} maxWidth="lg" fullWidth>
-        <DialogTitle>
-          Detalles: {activeOrder?.order_number} - {activeOrder?.customer_name}
-        </DialogTitle>
-        <DialogContent>
-          {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-          {detailLoading ? (
-             <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-                <CircularProgress />
-             </Box>
-          ) : (
-            <>
-              {activeOrder && (
-                <Box sx={{ mb: 2, p: 2, bgcolor: 'background.paper', borderRadius: 1 }}>
-                  <StatusChips order={activeOrder} />
-                  <Grid container spacing={2} sx={{ mt: 1 }}>
-                    <Grid item xs={12} md={4}>
-                        <Typography variant="body2">
-                            <strong>Vendedor:</strong> {activeOrder.sales_rep || 'N/A'}
-                        </Typography>
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                        <Typography variant="body2">
-                            <strong>Total:</strong> ${activeOrder.total_amount?.toLocaleString()}
-                        </Typography>
-                    </Grid>
-                    <Grid item xs={12} md={4}>
-                         <Typography variant="body2">
-                             <strong>Promesa:</strong> {activeOrder.promised_date ? format(new Date(activeOrder.promised_date), 'dd/MM/yyyy') : '-'}
-                         </Typography>
-                    </Grid>
-                  </Grid>
-                  {activeOrder.customer_service_notes && (
-                     <Typography variant="body2" sx={{ mt: 1, p: 1, bgcolor: '#f5f5f5', borderRadius: 1, whiteSpace: 'pre-wrap' }}>
-                        <strong>Notas:</strong> {activeOrder.customer_service_notes}
-                     </Typography>
-                  )}
-                  
-                  <Box sx={{ mt: 2 }}>
-                     <Accordion disableGutters elevation={0} sx={{ border: '1px solid #e0e0e0', borderRadius: 1 }}>
-                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                           <Typography variant="subtitle2">Gestionar Flujo por Departamento</Typography>
-                        </AccordionSummary>
-                        <AccordionDetails>
-                           <Grid container spacing={2}>
-                              <Grid item xs={12} sm={4}>
-                                 <FormControl fullWidth size="small">
-                                    <InputLabel>Planeación</InputLabel>
-                                    <Select 
-                                        label="Planeación" 
-                                        value={activeOrder.planning_status || 'pending'}
-                                        onChange={(e) => handleUpdateDeptStatus('planning_status', e.target.value)}
-                                        disabled={updatingDept}
-                                    >
-                                        <MenuItem value="pending">Pendiente</MenuItem>
-                                        <MenuItem value="approved">Aprobado</MenuItem>
-                                        <MenuItem value="rejected">Rechazado</MenuItem>
-                                    </Select>
-                                 </FormControl>
-                              </Grid>
-                              <Grid item xs={12} sm={4}>
-                                 <FormControl fullWidth size="small">
-                                    <InputLabel>Almacén</InputLabel>
-                                    <Select 
-                                        label="Almacén" 
-                                        value={activeOrder.warehouse_status || 'pending'}
-                                        onChange={(e) => handleUpdateDeptStatus('warehouse_status', e.target.value)}
-                                        disabled={updatingDept}
-                                    >
-                                        <MenuItem value="pending">Pendiente</MenuItem>
-                                        <MenuItem value="material_available">Dispoible</MenuItem>
-                                        <MenuItem value="material_missing">Faltante</MenuItem>
-                                    </Select>
-                                 </FormControl>
-                              </Grid>
-                               <Grid item xs={12} sm={4}>
-                                 <FormControl fullWidth size="small">
-                                    <InputLabel>Compras</InputLabel>
-                                    <Select 
-                                        label="Compras" 
-                                        value={activeOrder.purchasing_status || 'pending'}
-                                        onChange={(e) => handleUpdateDeptStatus('purchasing_status', e.target.value)}
-                                        disabled={updatingDept}
-                                    >
-                                        <MenuItem value="pending">Pendiente</MenuItem>
-                                        <MenuItem value="ordered">Ordenado</MenuItem>
-                                        <MenuItem value="received">Recibido</MenuItem>
-                                    </Select>
-                                 </FormControl>
-                              </Grid>
-                               <Grid item xs={12} sm={4}>
-                                 <FormControl fullWidth size="small">
-                                    <InputLabel>Producción</InputLabel>
-                                    <Select 
-                                        label="Producción" 
-                                        value={activeOrder.production_status || 'pending'}
-                                        onChange={(e) => handleUpdateDeptStatus('production_status', e.target.value)}
-                                        disabled={updatingDept}
-                                    >
-                                        <MenuItem value="pending">Pendiente</MenuItem>
-                                        <MenuItem value="in_process">En Proceso</MenuItem>
-                                        <MenuItem value="completed">Completado</MenuItem>
-                                    </Select>
-                                 </FormControl>
-                              </Grid>
-                               <Grid item xs={12} sm={4}>
-                                 <FormControl fullWidth size="small">
-                                    <InputLabel>Logística</InputLabel>
-                                    <Select 
-                                        label="Logística" 
-                                        value={activeOrder.logistics_status || 'pending'}
-                                        onChange={(e) => handleUpdateDeptStatus('logistics_status', e.target.value)}
-                                        disabled={updatingDept}
-                                    >
-                                        <MenuItem value="pending">Pendiente</MenuItem>
-                                        <MenuItem value="ready_to_ship">Listo para Envío</MenuItem>
-                                        <MenuItem value="shipped">Enviado</MenuItem>
-                                    </Select>
-                                 </FormControl>
-                              </Grid>
-                           </Grid>
-                        </AccordionDetails>
-                     </Accordion>
-                  </Box>
-                </Box>
-              )}
-              <Box sx={{ mt: 2 }}>
-                <TableContainer>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell><strong>OT</strong></TableCell>
-                      <TableCell><strong>SKU</strong></TableCell>
-                      <TableCell><strong>Descripción</strong></TableCell>
-                      <TableCell><strong>Specs</strong></TableCell>
-                      <TableCell><strong>Ordenado</strong></TableCell>
-                      <TableCell><strong>Producido</strong></TableCell>
-                      <TableCell><strong>Enviado</strong></TableCell>
-                      <TableCell><strong>Acciones</strong></TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {items.map(item => (
-                      <TableRow key={item.id}>
-                        <TableCell>{item.work_order || '-'}</TableCell>
-                        <TableCell>{item.item_code}</TableCell>
-                        <TableCell>{item.description || item.item_description}</TableCell>
-                        <TableCell>
-                            <Box sx={{ fontSize: '0.75rem', maxHeight: 100, overflowY: 'auto' }}>
-                            {item.specifications && Object.entries(item.specifications).map(([k, v]) => (
-                                <div key={k}><span style={{fontWeight: 500}}>{k}:</span> {v}</div>
-                            ))}
-                            </Box>
-                        </TableCell>
-                        <TableCell>{item.quantity_ordered} {item.unit}</TableCell>
-                        <TableCell>
-                          {editingItem?.id === item.id ? (
-                            <TextField
-                              type="number"
-                              value={itemData.quantity_produced}
-                              onChange={e => setItemData({ ...itemData, quantity_produced: parseFloat(e.target.value) || 0 })}
-                              size="small"
-                              inputProps={{ step: '0.01' }}
-                            />
-                          ) : (
-                            item.quantity_produced
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {editingItem?.id === item.id ? (
-                            <TextField
-                              type="number"
-                              value={itemData.quantity_shipped}
-                              onChange={e => setItemData({ ...itemData, quantity_shipped: parseFloat(e.target.value) || 0 })}
-                              size="small"
-                              inputProps={{ step: '0.01' }}
-                            />
-                          ) : (
-                            item.quantity_shipped
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {editingItem?.id === item.id ? (
-                            <>
-                              <Button size="small" onClick={handleSaveItem}>Guardar</Button>
-                              <Button size="small" onClick={() => setEditingItem(null)}>Cancelar</Button>
-                            </>
-                          ) : (
-                            <Button size="small" onClick={() => handleEditItem(item)}>Editar</Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                    {items.length === 0 && (
-                        <TableRow>
-                            <TableCell colSpan={8} align="center">No hay items</TableCell>
-                        </TableRow>
-                    )}
-                  </TableBody>
-                </Table>
-                </TableContainer>
-              </Box>
-            </>
-          )}
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={handleCloseDetail}>Cerrar</Button>
-        </DialogActions>
-      </Dialog>
     </Box>
   );
 }

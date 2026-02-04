@@ -20,6 +20,22 @@ Write-Step "Verificando estado de contenedores..."
 $status = docker-compose ps --format json | ConvertFrom-Json
 $runningCount = @($status | Where-Object { $_.State -like "*Up*" }).Count
 
+$devPidFile = Join-Path $PSScriptRoot "frontend\.devserver.pid"
+if (Test-Path $devPidFile) {
+    try {
+        $devPid = Get-Content $devPidFile -ErrorAction SilentlyContinue
+        if ($devPid) {
+            $proc = Get-Process -Id $devPid -ErrorAction SilentlyContinue
+            if ($proc) {
+                Write-Step "Deteniendo frontend dev server (PID $devPid)..."
+                Stop-Process -Id $devPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {
+    }
+    Remove-Item $devPidFile -Force -ErrorAction SilentlyContinue
+}
+
 if ($runningCount -eq 0) {
     Write-Host "[WARN] No hay contenedores en ejecución" -ForegroundColor Yellow
     Write-Host ""

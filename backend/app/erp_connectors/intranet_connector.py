@@ -1,13 +1,16 @@
 """
 Conector para Intranet Interna
-Implementa conexión con API REST de intranet corporativa
+Implementa conexión con API REST de intranet corporativa con retry y circuit breaker
 """
 
 import requests
 from requests.auth import HTTPBasicAuth, HTTPDigestAuth
+from requests.exceptions import RequestException, Timeout, ConnectionError
 from datetime import datetime
 import logging
+import time
 from .base_connector import BaseERPConnector
+from .resilience import with_retry, StructuredLogger
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +56,7 @@ class IntranetConnector(BaseERPConnector):
             raise
     
     def _get_bearer_token(self):
-        """Obtener token de autenticación Bearer"""
+        """Obtener token de autenticación Bearer con timeout"""
         try:
             # Adaptar según endpoint real de autenticación
             response = requests.post(
@@ -61,7 +64,8 @@ class IntranetConnector(BaseERPConnector):
                 json={
                     'username': self.username,
                     'password': self.password
-                }
+                },
+                timeout=self.default_timeout
             )
             
             if response.status_code == 200:
@@ -84,32 +88,77 @@ class IntranetConnector(BaseERPConnector):
         """Verificar conexión"""
         try:
             self.connect()
-            response = self.session.get(f"{self.base_url}/api/status")
+            response = self.session.get(
+                f"{self.base_url}/api/status",
+                timeout=self.default_timeout
+            )
             self.disconnect()
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Test de conexión falló: {str(e)}")
             return False
     
+    @with_retry(
+        max_attempts=3,
+        backoff_base=2.0,
+        exceptions=(Timeout, ConnectionError, RequestException)
+    )
     def _make_request(self, endpoint, method='GET', params=None, data=None):
-        """Helper para hacer requests"""
+        """
+        Helper para hacer requests con retry y logging estructurado.
+        """
         if not self.session:
             self.connect()
         
         url = f"{self.base_url}{endpoint}"
+        start_time = time.time()
         
         try:
             if method == 'GET':
-                response = self.session.get(url, params=params, verify=False)  # verify=False para cert internos
+                response = self.session.get(
+                    url, 
+                    params=params, 
+                    verify=False,  # verify=False para cert internos
+                    timeout=self.default_timeout
+                )
             elif method == 'POST':
-                response = self.session.post(url, json=data, verify=False)
+                response = self.session.post(
+                    url, 
+                    json=data, 
+                    verify=False,
+                    timeout=self.default_timeout
+                )
+            
+            duration_ms = (time.time() - start_time) * 1000
+            
+            # Log estructurado
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint=endpoint,
+                method=method,
+                status=response.status_code,
+                duration_ms=duration_ms
+            )
             
             response.raise_for_status()
             return response.json()
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Error en request a Intranet: {str(e)}")
-            return None
+        except RequestException as e:
+            duration_ms = (time.time() - start_time) * 1000
+            status = getattr(e.response, 'status_code', None) if hasattr(e, 'response') else None
+            
+            # Log estructurado de error
+            StructuredLogger.log_request(
+                source=self.source_name,
+                endpoint=endpoint,
+                method=method,
+                status=status or 0,
+                duration_ms=duration_ms,
+                error=str(e)
+            )
+            
+            logger.error(f"Error en request a Intranet {endpoint}: {str(e)}")
+            raise  # Re-raise para que retry pueda manejarlo
     
     def fetch_orders(self, start_date=None, end_date=None):
         """Obtener órdenes desde Intranet"""

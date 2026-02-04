@@ -21,19 +21,24 @@ import {
   Chip,
   Tab,
   Tabs,
+  Divider,
+  Typography,
 } from '@mui/material';
-import { productionService, backorderService } from '../services/api';
+import { productionService } from '../services/api';
 
 export default function ProductionView() {
   const [searchTerm, setSearchTerm] = useState('');
   const { data, isLoading, refetch } = useQuery('production', productionService.getLogs);
-  const { data: backOrderData } = useQuery(
-      ['backorders-prod', searchTerm], 
-      () => backorderService.getAll({ search: searchTerm })
-  );
+    const { data: inProgressData, isLoading: isInProgressLoading } = useQuery(
+      ['in-progress-orders', searchTerm],
+      () => productionService.getInProgressOrders({ search: searchTerm, page_size: 500 })
+    );
   const [error, setError] = useState('');
   const [openForm, setOpenForm] = useState(false);
   const [tabIndex, setTabIndex] = useState(0);
+  const [ocrFile, setOcrFile] = useState(null);
+  const [ocrResult, setOcrResult] = useState(null);
+  const [ocrLoading, setOcrLoading] = useState(false);
   const [newLog, setNewLog] = useState({
     order_id: '',
     quantity_produced: '',
@@ -57,12 +62,33 @@ export default function ProductionView() {
     }
   };
 
-  if (isLoading) {
+  const handleRunOcr = async () => {
+    setError('');
+    setOcrResult(null);
+    if (!newLog.order_id) {
+      setError('Selecciona una orden antes de validar con OCR');
+      return;
+    }
+    if (!ocrFile) {
+      setError('Selecciona o captura una imagen de la etiqueta');
+      return;
+    }
+    setOcrLoading(true);
+    try {
+      const res = await productionService.ocrValidate(newLog.order_id, ocrFile);
+      setOcrResult(res);
+    } catch (e) {
+      setError(e.response?.data?.error || 'Error ejecutando OCR');
+    } finally {
+      setOcrLoading(false);
+    }
+  };
+
+  if (isLoading || isInProgressLoading) {
     return <CircularProgress />;
   }
 
-  const orders = backOrderData?.backorders || [];
-  const inProgressOrders = orders.filter(o => o.status === 'in_production');
+  const inProgressOrders = inProgressData?.items || [];
 
   return (
     <Box>
@@ -185,6 +211,51 @@ export default function ProductionView() {
               onChange={e => setNewLog({ ...newLog, notes: e.target.value })}
               fullWidth
             />
+
+            <Divider />
+
+            <Box>
+              <Typography variant="subtitle2" gutterBottom>
+                Validación de etiqueta (OCR)
+              </Typography>
+              <input
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] || null;
+                  setOcrFile(file);
+                  setOcrResult(null);
+                }}
+              />
+              <Box sx={{ mt: 1, display: 'flex', gap: 1, alignItems: 'center' }}>
+                <Button variant="outlined" onClick={handleRunOcr} disabled={ocrLoading || !ocrFile || !newLog.order_id}>
+                  {ocrLoading ? 'Leyendo...' : 'Validar con OCR'}
+                </Button>
+                {ocrResult?.ok && <Chip label="OK" color="success" size="small" />}
+                {ocrResult && !ocrResult.ok && <Chip label="No coincide" color="warning" size="small" />}
+              </Box>
+
+              {ocrResult?.validation?.matched && (
+                <Box sx={{ mt: 1, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                  <Chip
+                    size="small"
+                    label={`Orden: ${ocrResult.validation.matched.order_number || '—'}`}
+                    color={ocrResult.validation.matched.order_number ? 'success' : 'default'}
+                  />
+                  <Chip
+                    size="small"
+                    label={`Item: ${ocrResult.validation.matched.item_code || '—'}`}
+                    color={ocrResult.validation.matched.item_code ? 'success' : 'default'}
+                  />
+                  <Chip
+                    size="small"
+                    label={`OT: ${ocrResult.validation.matched.work_order || '—'}`}
+                    color={ocrResult.validation.matched.work_order ? 'success' : 'default'}
+                  />
+                </Box>
+              )}
+            </Box>
           </Box>
         </DialogContent>
         <DialogActions>

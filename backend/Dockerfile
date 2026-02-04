@@ -7,6 +7,9 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     unixodbc-dev \
+    tesseract-ocr \
+    tesseract-ocr-spa \
+    tesseract-ocr-eng \
     && rm -rf /var/lib/apt/lists/*
 
 # Copiar requirements
