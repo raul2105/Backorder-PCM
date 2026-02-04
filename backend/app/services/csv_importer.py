@@ -2,6 +2,73 @@ import pandas as pd
 from datetime import datetime
 from app import db
 from app.models import Order, OrderItem, Customer, AuditLog
+from werkzeug.utils import secure_filename
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+
+class CSVImporterValidator:
+    """Validador de seguridad para archivos CSV"""
+    
+    ALLOWED_EXTENSIONS = {'csv', 'txt'}
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_ROWS = 10000
+    
+    @staticmethod
+    def validate_file(file):
+        """
+        Validar archivo antes de procesar
+        
+        Args:
+            file: FileStorage object from Flask request
+            
+        Raises:
+            ValueError: Si el archivo no es válido
+        """
+        if not file:
+            raise ValueError("No se proporcionó archivo")
+        
+        # Check filename
+        filename = secure_filename(file.filename)
+        if not filename:
+            raise ValueError("Nombre de archivo inválido")
+        
+        # Check extension
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in CSVImporterValidator.ALLOWED_EXTENSIONS:
+            raise ValueError(f"Solo se permiten archivos {CSVImporterValidator.ALLOWED_EXTENSIONS}")
+        
+        return True
+    
+    @staticmethod
+    def validate_row_count(df):
+        """Validar número de filas en DataFrame"""
+        if len(df) > CSVImporterValidator.MAX_ROWS:
+            raise ValueError(f"Archivo contiene {len(df)} filas, máximo permitido: {CSVImporterValidator.MAX_ROWS}")
+        
+        return True
+    
+    @staticmethod
+    def sanitize_string(value, max_length=500):
+        """Sanitizar string para prevenir inyección"""
+        if value is None or pd.isna(value):
+            return None
+        
+        # Convert to string and strip
+        value = str(value).strip()
+        
+        # Remove null bytes and control characters
+        value = value.replace('\x00', '')
+        value = ''.join(char for char in value if ord(char) >= 32 or char in '\n\r\t')
+        
+        # Truncate to max length
+        if len(value) > max_length:
+            value = value[:max_length]
+        
+        return value if value else None
+
 
 STATUS_MAP = {
     # Planeación / Liberaciones
@@ -65,58 +132,95 @@ def _to_number(value):
 
 def import_backorders_from_csv(path: str, user_id: int | None = None, test_mode: bool = False):
     """
-    Importa datos de backorder desde CSV.
+    Importa datos de backorder desde CSV con validaciones de seguridad.
     
     Args:
         path: Ruta al archivo CSV
         user_id: ID del usuario que realiza la importación (opcional)
         test_mode: Si es True, agrega prefijo 'TEST-' a los números de orden
+        
+    Returns:
+        Dict con estadísticas de importación
+        
+    Raises:
+        ValueError: Si el archivo no es válido o contiene datos inválidos
     """
-    df = pd.read_csv(path, encoding='latin-1')
-    df.columns = [c.replace('\n', ' ').replace('\r', ' ').strip() for c in df.columns]
+    # Validar que el archivo existe
+    if not os.path.exists(path):
+        raise ValueError(f"Archivo no encontrado: {path}")
+    
+    # Validar tamaño
+    file_size = os.path.getsize(path)
+    if file_size > CSVImporterValidator.MAX_FILE_SIZE:
+        raise ValueError(f"Archivo muy grande: {file_size} bytes (máximo: {CSVImporterValidator.MAX_FILE_SIZE})")
+    
+    try:
+        # Leer CSV con límite de filas
+        df = pd.read_csv(path, encoding='latin-1', nrows=CSVImporterValidator.MAX_ROWS + 1)
+    except Exception as e:
+        logger.error(f"Error leyendo CSV: {e}")
+        raise ValueError(f"Error leyendo archivo CSV: {str(e)}")
+    
+    # Validar número de filas
+    CSVImporterValidator.validate_row_count(df)
+    
+    # Sanitizar nombres de columnas
+    df.columns = [CSVImporterValidator.sanitize_string(c, max_length=100) or f'col_{i}' 
+                  for i, c in enumerate(df.columns)]
 
     new_orders = 0
     updated_orders = 0
+    errors = []
 
-    for _, row in df.iterrows():
-        order_number = str(row.get('No. Pedido', '')).strip()
-        if not order_number:
-            continue
-        
-        # Agregar prefijo TEST- si está en modo de pruebas
-        if test_mode:
-            order_number = f"TEST-{order_number}"
+    for idx, row in df.iterrows():
+        try:
+            # Sanitizar y validar order number
+            order_number = CSVImporterValidator.sanitize_string(row.get('No. Pedido', ''), max_length=50)
+            if not order_number:
+                continue
+            
+            # Agregar prefijo TEST- si está en modo de pruebas
+            if test_mode:
+                order_number = f"TEST-{order_number}"
 
-        info = str(row.get('INFO', '')).strip().upper()
-        # Normalizar claves y aplicar reglas adicionales
-        status = STATUS_MAP.get(info, None)
-        if status is None:
-            # 'PT' como estado exacto (evitar coincidir con 'PTE')
-            if info in ('PT', 'PT LOGISTICA', 'SOLO FACT'):
-                status = 'ready'
-            elif info.startswith('MP'):
-                status = 'pending'
-            elif info.startswith('LIB') or 'LIBERACION' in info:
-                status = 'in_production'
-            elif 'CANCEL' in info:
-                status = 'delivered'
+            # Sanitizar campos
+            info = CSVImporterValidator.sanitize_string(row.get('INFO', ''), max_length=100)
+            if info:
+                info = info.upper()
             else:
-                status = 'pending'
-        priority = PRIORITY_MAP.get(str(row.get('ABCD', '')).strip().upper(), 3)
+                info = ''
+            
+            # Normalizar claves y aplicar reglas adicionales
+            status = STATUS_MAP.get(info, None)
+            if status is None:
+                # 'PT' como estado exacto (evitar coincidir con 'PTE')
+                if info in ('PT', 'PT LOGISTICA', 'SOLO FACT'):
+                    status = 'ready'
+                elif info.startswith('MP'):
+                    status = 'pending'
+                elif info.startswith('LIB') or 'LIBERACION' in info:
+                    status = 'in_production'
+                elif 'CANCEL' in info:
+                    status = 'delivered'
+                else:
+                    status = 'pending'
+            
+            priority_str = CSVImporterValidator.sanitize_string(row.get('ABCD', ''), max_length=10)
+            priority = PRIORITY_MAP.get(priority_str.upper() if priority_str else '', 3)
 
-        order = Order.query.filter_by(order_number=order_number).first()
+            order = Order.query.filter_by(order_number=order_number).first()
 
-        customer_code = str(row.get('Cve', '')).strip()
-        customer_name = str(row.get('Cliente', '')).strip()
-        
-        # En modo prueba, agregar prefijo también al código de cliente
-        if test_mode:
-            customer_code = f"TEST-{customer_code}" if customer_code else ""
-        
-        customer = None
-        if customer_code:
-            customer = Customer.query.filter_by(customer_code=customer_code).first()
-            if not customer:
+            customer_code = CSVImporterValidator.sanitize_string(row.get('Cve', ''), max_length=50)
+            customer_name = CSVImporterValidator.sanitize_string(row.get('Cliente', ''), max_length=200)
+            
+            # En modo prueba, agregar prefijo también al código de cliente
+            if test_mode:
+                customer_code = f"TEST-{customer_code}" if customer_code else ""
+            
+            customer = None
+            if customer_code:
+                customer = Customer.query.filter_by(customer_code=customer_code).first()
+                if not customer:
                 customer = Customer(customer_code=customer_code, name=customer_name, erp_source='csv', erp_id=customer_code)
                 db.session.add(customer)
                 db.session.flush()

@@ -3,10 +3,12 @@ Rutas de administración (solo para usuarios con rol admin)
 """
 
 from flask import Blueprint, request, jsonify
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required
 from werkzeug.security import generate_password_hash
 from datetime import datetime
 from app import db
+from app.models import User, AuditLog
+from app.utils.auth_helpers import get_current_user, get_current_user_id
 from app.models import User, AuditLog, Order, OrderItem, ProductionLog
 from app.middleware import require_allowed_ip, ROLE_OPTIONS
 
@@ -18,8 +20,7 @@ def admin_required(f):
 
     @wraps(f)
     def wrapper(*args, **kwargs):
-        user_id = int(get_jwt_identity())
-        user = User.query.get(user_id)
+        user = get_current_user()
         if not user or user.role != 'admin':
             return jsonify({'error': 'No autorizado'}), 403
         return f(*args, **kwargs)
@@ -74,8 +75,10 @@ def create_user():
     db.session.add(new_user)
     db.session.commit()
 
-    db.session.add(AuditLog(user_id=int(get_jwt_identity()), action='create_user', entity='user', entity_id=str(new_user.id), details={'username': username, 'role': role}))
-    db.session.commit()
+    current_user_id = get_current_user_id()
+    if current_user_id:
+        db.session.add(AuditLog(user_id=current_user_id, action='create_user', entity='user', entity_id=str(new_user.id), details={'username': username, 'role': role}))
+        db.session.commit()
 
     return jsonify({'message': 'Usuario creado', 'id': new_user.id}), 201
 
@@ -103,8 +106,10 @@ def update_user(user_id):
 
     db.session.commit()
 
-    db.session.add(AuditLog(user_id=int(get_jwt_identity()), action='update_user', entity='user', entity_id=str(user.id), details=changes))
-    db.session.commit()
+    current_user_id = get_current_user_id()
+    if current_user_id:
+        db.session.add(AuditLog(user_id=current_user_id, action='update_user', entity='user', entity_id=str(user.id), details=changes))
+        db.session.commit()
 
     return jsonify({'message': 'Usuario actualizado'})
 

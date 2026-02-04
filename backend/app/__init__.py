@@ -20,14 +20,63 @@ jwt = JWTManager()
 celery = Celery(__name__)
 
 def load_config():
-    """Cargar configuración desde config.yaml"""
+    """
+    Cargar configuración desde config.yaml y override con variables de entorno
+    Las variables de entorno tienen prioridad sobre config.yaml para secrets
+    """
     # Buscar primero en /app/config.yaml (montado por Docker)
     config_path = '/app/config.yaml'
     if not os.path.exists(config_path):
         # Fallback a ruta relativa para desarrollo local
         config_path = os.path.join(os.path.dirname(__file__), '..', '..', 'config.yaml')
+    
     with open(config_path, 'r', encoding='utf-8') as f:
-        return yaml.safe_load(f)
+        config = yaml.safe_load(f)
+    
+    # Override secrets con variables de entorno (más seguro)
+    if os.getenv('SECRET_KEY'):
+        config['server']['secret_key'] = os.getenv('SECRET_KEY')
+    
+    if os.getenv('JWT_SECRET_KEY'):
+        config['server']['jwt_secret_key'] = os.getenv('JWT_SECRET_KEY')
+    
+    # Database
+    if os.getenv('DB_HOST'):
+        config['database']['host'] = os.getenv('DB_HOST')
+    if os.getenv('DB_PORT'):
+        config['database']['port'] = int(os.getenv('DB_PORT'))
+    if os.getenv('DB_NAME'):
+        config['database']['name'] = os.getenv('DB_NAME')
+    if os.getenv('DB_USER'):
+        config['database']['user'] = os.getenv('DB_USER')
+    if os.getenv('DB_PASSWORD'):
+        config['database']['password'] = os.getenv('DB_PASSWORD')
+    
+    # ERP Syteline
+    if os.getenv('SYTELINE_PASSWORD'):
+        config['erp_systems']['syteline']['connection']['password'] = os.getenv('SYTELINE_PASSWORD')
+    if os.getenv('SYTELINE_USERNAME'):
+        config['erp_systems']['syteline']['connection']['username'] = os.getenv('SYTELINE_USERNAME')
+    if os.getenv('SYTELINE_ENABLED'):
+        config['erp_systems']['syteline']['enabled'] = os.getenv('SYTELINE_ENABLED').lower() == 'true'
+    
+    # ERP Mongus
+    if os.getenv('MONGUS_API_KEY'):
+        config['erp_systems']['mongus']['api_key'] = os.getenv('MONGUS_API_KEY')
+    if os.getenv('MONGUS_BASE_URL'):
+        config['erp_systems']['mongus']['base_url'] = os.getenv('MONGUS_BASE_URL')
+    if os.getenv('MONGUS_ENABLED'):
+        config['erp_systems']['mongus']['enabled'] = os.getenv('MONGUS_ENABLED').lower() == 'true'
+    
+    # ERP Intranet
+    if os.getenv('INTRANET_PASSWORD'):
+        config['erp_systems']['intranet']['password'] = os.getenv('INTRANET_PASSWORD')
+    if os.getenv('INTRANET_USERNAME'):
+        config['erp_systems']['intranet']['username'] = os.getenv('INTRANET_USERNAME')
+    if os.getenv('INTRANET_ENABLED'):
+        config['erp_systems']['intranet']['enabled'] = os.getenv('INTRANET_ENABLED').lower() == 'true'
+    
+    return config
 
 def create_app(config_name='default'):
     """Factory para crear la aplicación Flask"""
@@ -39,6 +88,9 @@ def create_app(config_name='default'):
     app.config['OCR_CONFIG'] = config.get('ocr', {}) or {}
     
     # Configuración de Flask
+    app.config['SECRET_KEY'] = config['server']['secret_key']
+    # Use separate JWT secret if provided, otherwise use same as SECRET_KEY
+    app.config['JWT_SECRET_KEY'] = config['server'].get('jwt_secret_key', config['server']['secret_key'])
     secret_key = (config.get('server', {}).get('secret_key') or '').strip()
     is_debug = bool(config.get('server', {}).get('debug', False))
     env_name = os.getenv('FLASK_ENV', 'production').lower()

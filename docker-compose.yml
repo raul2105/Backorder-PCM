@@ -56,6 +56,8 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
+    container_name: backorder_celery
+    command: python celeryworker.py worker --loglevel=info
     container_name: backorder_celery_worker
     command: celery -A celery_app.celery worker --loglevel=info
     environment:
